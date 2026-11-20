@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   ClipboardList,
   Edit3,
   Eye,
@@ -204,6 +206,8 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
   const [statusFilter, setStatusFilter] = useState<'all' | OfficeCaseWorkflowStatus>('all');
   const [categoryFilter, setCategoryFilter] = useState<'all' | HospitalCategoryCode>('all');
   const [receiverFilter, setReceiverFilter] = useState<string>('all');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<25 | 50 | 100>(50);
 
   // Full Create/Edit Modal
   const [showFormModal, setShowFormModal] = useState(false);
@@ -334,6 +338,21 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
       return haystack.includes(effectiveSearch);
     });
   }, [officeCases, statusFilter, categoryFilter, receiverFilter, effectiveSearch]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [effectiveSearch, statusFilter, categoryFilter, receiverFilter, pageSize]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredCases.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+
+  const paginatedCases = useMemo(() => {
+    const start = (safePage - 1) * pageSize;
+    return filteredCases.slice(start, start + pageSize);
+  }, [filteredCases, safePage, pageSize]);
+
+  const pageRangeStart = filteredCases.length === 0 ? 0 : (safePage - 1) * pageSize + 1;
+  const pageRangeEnd = Math.min(safePage * pageSize, filteredCases.length);
 
   const openCreateModal = () => {
     setEditingCase(null);
@@ -895,7 +914,7 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
           <>
             {/* Mobile Cards */}
             <div className="divide-y divide-white/[0.06] lg:hidden">
-              {filteredCases.map((item) => {
+              {paginatedCases.map((item) => {
                 const statusMeta = OFFICE_WORKFLOW_META[item.workflowStatus];
                 const fullName = `${item.patientPrefix} ${item.patientFirstName} ${item.patientLastName}`.trim();
 
@@ -1031,7 +1050,7 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.06] text-xs">
-                  {filteredCases.map((item) => {
+                  {paginatedCases.map((item) => {
                     const statusMeta = OFFICE_WORKFLOW_META[item.workflowStatus];
                     const fullName = `${item.patientPrefix} ${item.patientFirstName} ${item.patientLastName}`.trim();
                     const paymentLabels = item.paymentChannels
@@ -1236,6 +1255,65 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                   })}
                 </tbody>
               </table>
+            </div>
+
+            {/* Pagination Footer Bar */}
+            <div className="px-4 py-3 border-t border-white/[0.08] bg-white/[0.02] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-[#C8B6AE]">
+              <div className="flex flex-wrap items-center gap-2 font-mono tabular-nums">
+                <span>
+                  แสดง{' '}
+                  <strong className="text-white">
+                    {pageRangeStart.toLocaleString('th-TH')}–{pageRangeEnd.toLocaleString('th-TH')}
+                  </strong>{' '}
+                  จาก{' '}
+                  <strong className="text-white">
+                    {filteredCases.length.toLocaleString('th-TH')}
+                  </strong>{' '}
+                  เคส
+                </span>
+                {filteredCases.length !== officeCases.length && (
+                  <span className="text-[#8E97AB]">
+                    (ทั้งหมด {officeCases.length.toLocaleString('th-TH')} เคสในระบบ)
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value) as 25 | 50 | 100)}
+                  aria-label="จำนวนรายการต่อหน้า"
+                  className="glass-input h-8 px-2.5 text-xs rounded-lg cursor-pointer"
+                >
+                  <option value={25}>25 รายการ/หน้า</option>
+                  <option value={50}>50 รายการ/หน้า</option>
+                  <option value={100}>100 รายการ/หน้า</option>
+                </select>
+
+                <div className="inline-flex items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={safePage <= 1}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    className="btn-glass h-8 px-2.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-35"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                    ก่อนหน้า
+                  </button>
+                  <span className="px-2.5 font-mono tabular-nums text-white text-xs">
+                    หน้า {safePage} / {totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={safePage >= totalPages}
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    className="btn-glass h-8 px-2.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-35"
+                  >
+                    ถัดไป
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
             </div>
           </>
         )}

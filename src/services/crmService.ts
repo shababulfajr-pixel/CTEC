@@ -8,6 +8,7 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
+  writeBatch,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import {
@@ -606,6 +607,21 @@ export async function updateUserRoleAndStatus(
   }
 }
 
+async function deleteIdsInBatches(collectionName: string, ids: string[]): Promise<number> {
+  const CHUNK_SIZE = 100;
+  let deleted = 0;
+  for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+    const slice = ids.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+    for (const id of slice) {
+      batch.delete(doc(db, collectionName, id));
+    }
+    await batch.commit();
+    deleted += slice.length;
+  }
+  return deleted;
+}
+
 export async function clearAllWorkspaceRecords(params: {
   dealsIds: string[];
   hospitalsIds: string[];
@@ -619,29 +635,13 @@ export async function clearAllWorkspaceRecords(params: {
   notificationsDeleted: number;
 }> {
   const { dealsIds, hospitalsIds, officeCaseIds, notificationIds, actor } = params;
-  let dealsDeleted = 0;
-  let hospitalsDeleted = 0;
-  let officeCasesDeleted = 0;
-  let notificationsDeleted = 0;
 
   try {
-    // Delete deals first (child records referencing hospitals)
-    for (const id of dealsIds) {
-      await deleteDoc(doc(db, 'deals', id));
-      dealsDeleted += 1;
-    }
-    for (const id of hospitalsIds) {
-      await deleteDoc(doc(db, 'hospitals', id));
-      hospitalsDeleted += 1;
-    }
-    for (const id of officeCaseIds) {
-      await deleteDoc(doc(db, 'officeCases', id));
-      officeCasesDeleted += 1;
-    }
-    for (const id of notificationIds) {
-      await deleteDoc(doc(db, 'notifications', id));
-      notificationsDeleted += 1;
-    }
+    // Delete deals first (child records referencing hospitals) in fast 100-doc writeBatch commits
+    const dealsDeleted = await deleteIdsInBatches('deals', dealsIds);
+    const hospitalsDeleted = await deleteIdsInBatches('hospitals', hospitalsIds);
+    const officeCasesDeleted = await deleteIdsInBatches('officeCases', officeCaseIds);
+    const notificationsDeleted = await deleteIdsInBatches('notifications', notificationIds);
 
     await logAuditEvent({
       action: 'ล้างข้อมูลเดโม่เพื่อเริ่มใช้งานจริง',

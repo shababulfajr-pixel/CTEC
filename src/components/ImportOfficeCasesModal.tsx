@@ -3,10 +3,14 @@ import {
   AlertCircle,
   Check,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   ClipboardPaste,
   Download,
   FileSpreadsheet,
+  Layers,
   Loader2,
+  Search,
   Trash2,
   Upload,
   X,
@@ -17,11 +21,14 @@ import {
   parseCtecOfficeUploadDetailed,
   type ImportDetectedFormat,
   type OfficeCaseSeedInput,
+  type ParsedSheetResult,
 } from '../data/officeCaseReferenceData';
 import {
-  findMatchingExistingCase,
+  buildExistingCaseLookup,
   importOfficeCasesBatch,
+  matchCaseInLookup,
   type BatchImportResult,
+  type DuplicateImportMode,
 } from '../services/officeCaseService';
 import {
   OFFICE_WORKFLOW_META,
@@ -38,6 +45,9 @@ interface ImportOfficeCasesModalProps {
 }
 
 type SourceTab = 'file' | 'paste';
+type PreviewFilterMode = 'all' | 'new' | 'dup';
+
+const PREVIEW_PAGE_SIZE = 50;
 
 const FORMAT_LABELS: Record<ImportDetectedFormat, string> = {
   ctec_raw_ledger: 'ทะเบียน CTEC ต้นฉบับ (54 คอลัมน์)',
@@ -63,7 +73,10 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
   const [dragActive, setDragActive] = useState(false);
   const [pasteText, setPasteText] = useState('');
 
-  // Parsed preview state
+  // Multi-sheet + Parsed preview state
+  const [uploadedFileName, setUploadedFileName] = useState('');
+  const [sheetResults, setSheetResults] = useState<ParsedSheetResult[]>([]);
+  const [selectedSheetKey, setSelectedSheetKey] = useState<string>('');
   const [parsedCases, setParsedCases] = useState<OfficeCaseSeedInput[]>([]);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [detectedFormat, setDetectedFormat] = useState<ImportDetectedFormat>('unknown');
@@ -71,33 +84,83 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
   const [parseError, setParseError] = useState<string | null>(null);
   const [parsing, setParsing] = useState(false);
 
+  // Preview pagination & filter (keeps 500–5,000+ rows butter smooth)
+  const [previewSearch, setPreviewSearch] = useState('');
+  const [previewFilter, setPreviewFilter] = useState<PreviewFilterMode>('all');
+  const [previewPage, setPreviewPage] = useState(1);
+
   // Import execution state
-  const [duplicateMode, setDuplicateMode] = useState<'skip' | 'update'>('skip');
+  const [duplicateMode, setDuplicateMode] = useState<DuplicateImportMode>('skip');
   const [importing, setImporting] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number }>({
+  const [progress, setProgress] = useState<{ done: number; total: number; label: string }>({
     done: 0,
     total: 0,
+    label: '',
   });
   const [importResult, setImportResult] = useState<BatchImportResult | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Freeze match table during active batch import so live Firestore snapshots do not thrash the modal
+  const frozenMatchesRef = useRef<(OfficeCase | undefined)[]>([]);
+
+  // O(1) lookup index for existing cases
+  const existingLookup = useMemo(() => {
+    return buildExistingCaseLookup(officeCases);
+  }, [officeCases]);
 
   const existingMatches = useMemo(() => {
-    return parsedCases.map((item) => findMatchingExistingCase(item, officeCases));
-  }, [parsedCases, officeCases]);
+    if (importing && frozenMatchesRef.current.length === parsedCases.length) {
+      return frozenMatchesRef.current;
+    }
+    const matches = parsedCases.map((item) => matchCaseInLookup(item, existingLookup));
+    frozenMatchesRef.current = matches;
+    return matches;
+  }, [parsedCases, existingLookup, importing]);
 
   const summaryCounts = useMemo(() => {
     let selectedTotal = 0;
     let newCount = 0;
     let dupCount = 0;
-    parsedCases.forEach((_, idx) => {
-      if (!selectedIndices.has(idx)) return;
+    for (let idx = 0; idx < parsedCases.length; idx++) {
+      if (!selectedIndices.has(idx)) continue;
       selectedTotal += 1;
       if (existingMatches[idx]) dupCount += 1;
       else newCount += 1;
-    });
+    }
     return { selectedTotal, newCount, dupCount };
   }, [parsedCases, selectedIndices, existingMatches]);
+
+  const filteredPreviewIndices = useMemo(() => {
+    const q = previewSearch.trim().toLowerCase();
+    const out: number[] = [];
+    for (let idx = 0; idx < parsedCases.length; idx++) {
+      const isDup = Boolean(existingMatches[idx]);
+      if (previewFilter === 'new' && isDup) continue;
+      if (previewFilter === 'dup' && !isDup) continue;
+      if (q) {
+        const item = parsedCases[idx];
+        const hay = `${item.jobNumber} ${item.salesSeqNo} ${item.hospitalName} ${item.patientFirstName} ${item.patientLastName} ${item.patientHN} ${item.doctorName} ${item.productCode} ${item.caseReceiver}`.toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+      out.push(idx);
+    }
+    return out;
+  }, [parsedCases, existingMatches, previewFilter, previewSearch]);
+
+  const totalPreviewPages = Math.max(
+    1,
+    Math.ceil(filteredPreviewIndices.length / PREVIEW_PAGE_SIZE)
+  );
+  const safePreviewPage = Math.min(previewPage, totalPreviewPages);
+  const visiblePreviewIndices = useMemo(() => {
+    const start = (safePreviewPage - 1) * PREVIEW_PAGE_SIZE;
+    return filteredPreviewIndices.slice(start, start + PREVIEW_PAGE_SIZE);
+  }, [filteredPreviewIndices, safePreviewPage]);
+
+  const totalAllSheetsCount = useMemo(
+    () => sheetResults.reduce((sum, s) => sum + s.cases.length, 0),
+    [sheetResults]
+  );
 
   if (!open) return null;
 
@@ -108,6 +171,10 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
     warnings: string[]
   ) => {
     setImportResult(null);
+    setPreviewSearch('');
+    setPreviewFilter('all');
+    setPreviewPage(1);
+
     if (cases.length === 0) {
       setParsedCases([]);
       setSelectedIndices(new Set());
@@ -124,25 +191,73 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
     setParsedCases(cases);
     setDetectedFormat(format);
     setSourceLabel(label);
-    setSelectedIndices(new Set(cases.map((_, idx) => idx)));
+    const allIdx = new Set<number>();
+    for (let i = 0; i < cases.length; i++) allIdx.add(i);
+    setSelectedIndices(allIdx);
+  };
+
+  const handleSelectSheet = (key: string, sheets: ParsedSheetResult[], fileName: string) => {
+    setSelectedSheetKey(key);
+    if (key === '__all__') {
+      const combined = sheets.flatMap((s) => s.cases);
+      const primaryFormat = sheets[0]?.detectedFormat ?? 'flexible_headers';
+      applyParsedPreview(
+        combined,
+        primaryFormat,
+        `${fileName} (รวมทุกชีต ${sheets.length} ชีต)`,
+        []
+      );
+      return;
+    }
+
+    const found = sheets.find((s) => s.sheetName === key);
+    if (found) {
+      applyParsedPreview(
+        found.cases,
+        found.detectedFormat,
+        `${fileName} (${found.sheetName})`,
+        found.warnings
+      );
+    }
   };
 
   const handleFileSelected = async (file: File) => {
     setParsing(true);
     setParseError(null);
     setImportResult(null);
+    setSheetResults([]);
+    setSelectedSheetKey('');
+    setUploadedFileName(file.name);
     try {
       const res = await parseCtecOfficeUploadDetailed(file);
-      applyParsedPreview(
-        res.cases,
-        res.detectedFormat,
-        `${file.name}${res.sheetName && res.sheetName !== file.name ? ` (${res.sheetName})` : ''}`,
-        res.warnings
-      );
+      const sheets = res.sheetResults ?? [];
+      setSheetResults(sheets);
+
+      if (sheets.length > 1) {
+        const totalRows = sheets.reduce((sum, s) => sum + s.cases.length, 0);
+        const largestSheet = sheets.reduce(
+          (best, s) => (s.cases.length > best.cases.length ? s : best),
+          sheets[0]
+        );
+        // If rows are distributed across multiple sheets (e.g., monthly tabs), combine all sheets by default;
+        // otherwise select the primary sheet while still letting the user switch to "รวมทุกชีต" with 1 click.
+        const defaultKey =
+          largestSheet.cases.length < totalRows * 0.85 ? '__all__' : largestSheet.sheetName;
+        handleSelectSheet(defaultKey, sheets, file.name);
+      } else {
+        setSelectedSheetKey(res.sheetName || '');
+        applyParsedPreview(
+          res.cases,
+          res.detectedFormat,
+          `${file.name}${res.sheetName && res.sheetName !== file.name ? ` (${res.sheetName})` : ''}`,
+          res.warnings
+        );
+      }
     } catch (err) {
       console.error('Import file parse failed:', err);
       setParsedCases([]);
       setSelectedIndices(new Set());
+      setSheetResults([]);
       setParseError(
         'ไม่สามารถอ่านไฟล์นี้ได้ กรุณาตรวจสอบว่าไฟล์ไม่เสียหาย หรือลองคัดลอกข้อมูลจาก Excel มาวางในแท็บ "วางข้อมูลจากตาราง"'
       );
@@ -154,6 +269,9 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
 
   const handleParsePaste = () => {
     setImportResult(null);
+    setSheetResults([]);
+    setSelectedSheetKey('');
+    setUploadedFileName('');
     const res = parseCtecOfficeTextDetailed(pasteText);
     applyParsedPreview(res.cases, res.detectedFormat, 'ข้อมูลวางจากตาราง', res.warnings);
   };
@@ -161,10 +279,16 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
   const handleClearPreview = () => {
     setParsedCases([]);
     setSelectedIndices(new Set());
+    setSheetResults([]);
+    setSelectedSheetKey('');
+    setUploadedFileName('');
     setDetectedFormat('unknown');
     setSourceLabel('');
     setParseError(null);
     setImportResult(null);
+    setPreviewSearch('');
+    setPreviewFilter('all');
+    setPreviewPage(1);
   };
 
   const toggleRow = (idx: number) => {
@@ -180,7 +304,9 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
     if (selectedIndices.size === parsedCases.length) {
       setSelectedIndices(new Set());
     } else {
-      setSelectedIndices(new Set(parsedCases.map((_, idx) => idx)));
+      const all = new Set<number>();
+      for (let i = 0; i < parsedCases.length; i++) all.add(i);
+      setSelectedIndices(all);
     }
   };
 
@@ -192,10 +318,20 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
   const handleConfirmImport = async () => {
     if (importing || summaryCounts.selectedTotal === 0) return;
 
-    const rowsToImport = parsedCases.filter((_, idx) => selectedIndices.has(idx));
+    const rowsToImport: OfficeCaseSeedInput[] = [];
+    for (let idx = 0; idx < parsedCases.length; idx++) {
+      if (selectedIndices.has(idx)) rowsToImport.push(parsedCases[idx]);
+    }
+
+    // Freeze current matches snapshot during batch commit
+    frozenMatchesRef.current = existingMatches;
     setImporting(true);
     setImportResult(null);
-    setProgress({ done: 0, total: rowsToImport.length });
+    setProgress({
+      done: 0,
+      total: rowsToImport.length,
+      label: `เตรียมนำเข้า ${rowsToImport.length.toLocaleString('th-TH')} รายการ (แบบชุดครั้งละ 100 รายการ)...`,
+    });
 
     try {
       const result = await importOfficeCasesBatch(
@@ -205,22 +341,35 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
         {
           duplicateMode,
           sourceLabel,
-          onProgress: (done, total) => setProgress({ done, total }),
+          onProgress: (done, total, batchLabel) =>
+            setProgress({
+              done,
+              total,
+              label: batchLabel || `กำลังบันทึก ${done.toLocaleString('th-TH')} / ${total.toLocaleString('th-TH')} รายการ...`,
+            }),
         }
       );
       setImportResult(result);
 
       if (result.imported > 0 || result.updated > 0) {
         const parts: string[] = [];
-        if (result.imported > 0) parts.push(`นำเข้าใหม่ ${result.imported} เคส`);
-        if (result.updated > 0) parts.push(`อัปเดต ${result.updated} เคส`);
-        if (result.skipped > 0) parts.push(`ข้ามซ้ำ ${result.skipped}`);
-        if (result.failed > 0) parts.push(`ไม่สำเร็จ ${result.failed}`);
+        if (result.imported > 0)
+          parts.push(`นำเข้าใหม่ ${result.imported.toLocaleString('th-TH')} เคส`);
+        if (result.updated > 0)
+          parts.push(`อัปเดต ${result.updated.toLocaleString('th-TH')} เคส`);
+        if (result.skipped > 0)
+          parts.push(`ข้ามซ้ำ ${result.skipped.toLocaleString('th-TH')}`);
+        if (result.failed > 0)
+          parts.push(`ไม่สำเร็จ ${result.failed.toLocaleString('th-TH')}`);
         onNotifyToast(`นำเข้าเคสเสร็จสิ้น: ${parts.join(' · ')}`);
       } else if (result.failed > 0) {
-        onNotifyToast(`นำเข้าไม่สำเร็จ ${result.failed} รายการ กรุณาดูรายละเอียดในหน้าต่างนำเข้า`);
+        onNotifyToast(
+          `นำเข้าไม่สำเร็จ ${result.failed.toLocaleString('th-TH')} รายการ กรุณาดูรายละเอียดในหน้าต่างนำเข้า`
+        );
       } else {
-        onNotifyToast(`ไม่พบเคสใหม่ (ข้อมูลซ้ำทั้งหมด ${result.skipped} รายการ)`);
+        onNotifyToast(
+          `ไม่พบเคสใหม่ (ข้อมูลซ้ำทั้งหมด ${result.skipped.toLocaleString('th-TH')} รายการ — สามารถเลือก "นำเข้าทั้งหมด" ได้)`
+        );
       }
     } catch (err) {
       console.error('Batch import unexpected error:', err);
@@ -231,7 +380,14 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
   };
 
   const progressPercent =
-    progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
+    progress.total > 0 ? Math.min(100, Math.round((progress.done / progress.total) * 100)) : 0;
+
+  const pageStartItem =
+    filteredPreviewIndices.length === 0 ? 0 : (safePreviewPage - 1) * PREVIEW_PAGE_SIZE + 1;
+  const pageEndItem = Math.min(
+    safePreviewPage * PREVIEW_PAGE_SIZE,
+    filteredPreviewIndices.length
+  );
 
   return (
     <div
@@ -251,7 +407,7 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
               </h2>
             </div>
             <p className="text-xs text-[#C8B6AE] mt-0.5">
-              รองรับไฟล์ทะเบียน CTEC ต้นฉบับ (รวมถึงไฟล์ไม่มีนามสกุล), ไฟล์ Excel ที่ส่งออก, ไฟล์ CSV ภาษาไทย และตาราง Excel / Google Sheets ทั่วไป
+              รองรับไฟล์ขนาดใหญ่ 500–5,000+ แถว ด้วยระบบบันทึกแบบชุดความเร็วสูง (Batch Commit) พร้อมรองรับไฟล์ Excel หลายชีต และหัวตารางภาษาไทย/อังกฤษอัตโนมัติ
             </p>
           </div>
           <button
@@ -322,13 +478,12 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                 const dropped = e.dataTransfer.files?.[0];
                 if (dropped) void handleFileSelected(dropped);
               }}
-              className={`rounded-2xl border-2 border-dashed p-6 sm:p-8 text-center transition ${
+              className={`rounded-2xl border-2 border-dashed p-6 sm:p-7 text-center transition ${
                 dragActive
                   ? 'border-[#FF9457] bg-[#FF6B2B]/15'
                   : 'border-white/15 bg-white/[0.03] hover:border-white/25'
               }`}
             >
-              {/* No restrictive accept attribute so extensionless CSV files (e.g. รับเคสคิว19-11-69) can always be picked */}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -348,10 +503,12 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
               </div>
 
               <p className="text-sm font-semibold text-white">
-                ลากไฟล์มาวางที่นี่ หรือกดเลือกไฟล์จากเครื่อง
+                {parsing
+                  ? 'กำลังอ่านไฟล์และแยกคอลัมน์ข้อมูล...'
+                  : 'ลากไฟล์มาวางที่นี่ หรือกดเลือกไฟล์จากเครื่อง'}
               </p>
               <p className="text-xs text-[#A9B4C6] mt-1 max-w-xl mx-auto">
-                รองรับ <span className="text-white/90">.xlsx, .xls, .csv, .tsv</span> รวมถึงไฟล์ทะเบียน CTEC ที่ไม่มีนามสกุล (เช่น <span className="font-mono text-[#FFCF90]">รับเคสคิว19-11-69</span>) อ่านภาษาไทยอัตโนมัติทั้ง UTF-8 และ Windows-874
+                รองรับ <span className="text-white/90">.xlsx, .xls, .csv, .tsv</span> ขนาดใหญ่ 500–5,000+ แถว รวมถึงไฟล์ที่มีหลายชีต หรือหัวตาราง 2 ชั้น และอ่านภาษาไทยอัตโนมัติทั้ง UTF-8 / Windows-874
               </p>
 
               <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
@@ -377,7 +534,7 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                     คัดลอกแถวจาก Excel / Google Sheets แล้ววางลงด้านล่าง
                   </p>
                   <p className="text-xs text-[#A9B4C6]">
-                    แนะนำให้คัดลอกรวมแถวหัวคอลัมน์ (เช่น <span className="text-white/85">เลขที่รับงาน, โรงพยาบาล, ชื่อคนไข้, แพทย์, ราคา</span>) — ไม่จำเป็นต้องครบทุกช่อง
+                    รองรับการวางครั้งละ 500+ แถว แนะนำให้คัดลอกรวมแถวหัวคอลัมน์ (เช่น <span className="text-white/85">เลขที่รับงาน, โรงพยาบาล, ชื่อคนไข้, แพทย์, ราคา</span>)
                   </p>
                 </div>
               </div>
@@ -416,6 +573,50 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
             </div>
           )}
 
+          {/* Multi-Sheet Selector (shown automatically if Excel workbook has >1 data sheet) */}
+          {sheetResults.length > 1 && (
+            <div className="rounded-2xl border border-white/12 bg-white/[0.03] p-3.5 space-y-2">
+              <div className="flex items-center gap-2 text-xs font-semibold text-white">
+                <Layers className="w-4 h-4 text-[#FFB59D]" />
+                <span>
+                  พบข้อมูลหลายชีตในไฟล์ Excel ({sheetResults.length} ชีต · รวม{' '}
+                  {totalAllSheetsCount.toLocaleString('th-TH')} รายการ) — เลือกชีตที่ต้องการนำเข้า:
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={importing}
+                  onClick={() => handleSelectSheet('__all__', sheetResults, uploadedFileName)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                    selectedSheetKey === '__all__'
+                      ? 'bg-[#FF6B2B] text-white shadow-md shadow-[#FF6B2B]/25'
+                      : 'bg-white/5 text-[#C8B6AE] hover:text-white hover:bg-white/10'
+                  }`}
+                >
+                  รวมทุกชีต ({totalAllSheetsCount.toLocaleString('th-TH')})
+                </button>
+                {sheetResults.map((sheet) => (
+                  <button
+                    key={sheet.sheetName}
+                    type="button"
+                    disabled={importing}
+                    onClick={() =>
+                      handleSelectSheet(sheet.sheetName, sheetResults, uploadedFileName)
+                    }
+                    className={`px-3 py-1.5 rounded-xl text-xs font-medium transition cursor-pointer ${
+                      selectedSheetKey === sheet.sheetName
+                        ? 'bg-white/20 text-white border border-white/25'
+                        : 'bg-white/5 text-[#C8B6AE] hover:text-white hover:bg-white/10'
+                    }`}
+                  >
+                    {sheet.sheetName} ({sheet.cases.length.toLocaleString('th-TH')})
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Parse Error Banner */}
           {parseError && (
             <div className="rounded-2xl border border-rose-400/35 bg-rose-500/12 px-4 py-3 flex items-start gap-2.5 text-rose-200 text-xs">
@@ -446,19 +647,21 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                   ผลการนำเข้าข้อมูลเข้าฐานข้อมูล
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-3 text-xs">
+              <div className="flex flex-wrap items-center gap-3 text-xs font-mono tabular-nums">
                 <span className="text-emerald-200 font-semibold">
-                  นำเข้าใหม่: {importResult.imported} เคส
+                  นำเข้าใหม่: {importResult.imported.toLocaleString('th-TH')} เคส
                 </span>
                 {importResult.updated > 0 && (
                   <span className="text-sky-200 font-semibold">
-                    อัปเดตเคสเดิม: {importResult.updated} เคส
+                    อัปเดตเคสเดิม: {importResult.updated.toLocaleString('th-TH')} เคส
                   </span>
                 )}
-                <span className="text-white/75">ข้ามรายการซ้ำ: {importResult.skipped} เคส</span>
+                <span className="text-white/75">
+                  ข้ามรายการซ้ำ: {importResult.skipped.toLocaleString('th-TH')} เคส
+                </span>
                 {importResult.failed > 0 && (
                   <span className="text-rose-300 font-semibold">
-                    ไม่สำเร็จ: {importResult.failed} เคส
+                    ไม่สำเร็จ: {importResult.failed.toLocaleString('th-TH')} เคส
                   </span>
                 )}
               </div>
@@ -479,8 +682,8 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
               <div className="rounded-2xl border border-white/12 bg-black/30 p-3.5 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
                 <div className="space-y-1">
                   <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <span className="font-semibold text-white">
-                      พบ {parsedCases.length} รายการ
+                    <span className="font-semibold text-white font-mono tabular-nums">
+                      พบ {parsedCases.length.toLocaleString('th-TH')} รายการ
                     </span>
                     <span className="text-white/35">·</span>
                     <span className="text-[#FFCF90] font-medium">
@@ -495,12 +698,14 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                       </>
                     )}
                   </div>
-                  <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#C8B6AE]">
-                    <span>เลือกนำเข้า {summaryCounts.selectedTotal} รายการ</span>
-                    <span className="text-emerald-300">เคสใหม่ {summaryCounts.newCount}</span>
+                  <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#C8B6AE] font-mono tabular-nums">
+                    <span>เลือกนำเข้า {summaryCounts.selectedTotal.toLocaleString('th-TH')} รายการ</span>
+                    <span className="text-emerald-300">
+                      เคสใหม่ {summaryCounts.newCount.toLocaleString('th-TH')}
+                    </span>
                     {summaryCounts.dupCount > 0 && (
                       <span className="text-amber-300">
-                        ซ้ำกับในระบบ {summaryCounts.dupCount}
+                        ซ้ำกับในระบบ {summaryCounts.dupCount.toLocaleString('th-TH')}
                       </span>
                     )}
                   </div>
@@ -508,7 +713,7 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
 
                 <div className="flex flex-wrap items-center gap-2">
                   {/* Duplicate Handling Mode */}
-                  <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-white/5 border border-white/10 text-[11px]">
+                  <div className="inline-flex flex-wrap items-center gap-1 p-1 rounded-xl bg-white/5 border border-white/10 text-[11px]">
                     <button
                       type="button"
                       disabled={importing}
@@ -533,6 +738,18 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                     >
                       อัปเดตเคสเดิม
                     </button>
+                    <button
+                      type="button"
+                      disabled={importing}
+                      onClick={() => setDuplicateMode('import_all')}
+                      className={`px-2.5 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
+                        duplicateMode === 'import_all'
+                          ? 'bg-emerald-600/85 text-white'
+                          : 'text-[#A9B4C6] hover:text-white'
+                      }`}
+                    >
+                      นำเข้าทั้งหมด (ไม่ตัดซ้ำ)
+                    </button>
                   </div>
 
                   <button
@@ -547,7 +764,56 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                 </div>
               </div>
 
-              {/* Preview Data Table */}
+              {/* Preview Filter & Search Bar */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-white/[0.04] border border-white/10 text-[11px] self-start">
+                  {(
+                    [
+                      { id: 'all', label: `ทั้งหมด (${parsedCases.length.toLocaleString('th-TH')})` },
+                      {
+                        id: 'new',
+                        label: `เคสใหม่ (${parsedCases.filter((_, i) => !existingMatches[i]).length.toLocaleString('th-TH')})`,
+                      },
+                      {
+                        id: 'dup',
+                        label: `ซ้ำในระบบ (${parsedCases.filter((_, i) => Boolean(existingMatches[i])).length.toLocaleString('th-TH')})`,
+                      },
+                    ] as const
+                  ).map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => {
+                        setPreviewFilter(f.id);
+                        setPreviewPage(1);
+                      }}
+                      className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer ${
+                        previewFilter === f.id
+                          ? 'bg-white/15 text-white'
+                          : 'text-[#A9B4C6] hover:text-white'
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="relative sm:w-64">
+                  <Search className="w-3.5 h-3.5 text-[#8E97AB] absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={previewSearch}
+                    onChange={(e) => {
+                      setPreviewSearch(e.target.value);
+                      setPreviewPage(1);
+                    }}
+                    placeholder="ค้นหาในตัวอย่าง (เลขงาน, รพ., ชื่อ)..."
+                    className="glass-input w-full h-8 pl-8 pr-3 text-xs rounded-xl"
+                  />
+                </div>
+              </div>
+
+              {/* Paginated Preview Data Table (renders 50 rows/page for 60fps on 500–5,000+ rows) */}
               <div className="rounded-2xl border border-white/12 overflow-hidden bg-black/25">
                 <div className="overflow-x-auto max-h-72 overflow-y-auto">
                   <table className="w-full text-left border-collapse text-xs">
@@ -590,7 +856,8 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/8">
-                      {parsedCases.map((item, idx) => {
+                      {visiblePreviewIndices.map((idx) => {
+                        const item = parsedCases[idx];
                         const checked = selectedIndices.has(idx);
                         const match = existingMatches[idx];
                         const patientFull = [
@@ -607,7 +874,9 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                             key={`${item.jobNumber}-${item.salesSeqNo}-${idx}`}
                             onClick={() => !importing && toggleRow(idx)}
                             className={`transition cursor-pointer ${
-                              checked ? 'bg-white/[0.03] hover:bg-white/[0.06]' : 'opacity-45 hover:opacity-70'
+                              checked
+                                ? 'bg-white/[0.03] hover:bg-white/[0.06]'
+                                : 'opacity-45 hover:opacity-70'
                             }`}
                           >
                             <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
@@ -621,7 +890,9 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                             </td>
                             <td className="py-2.5 px-2.5 whitespace-nowrap">
                               <div className="font-mono font-semibold text-white">
-                                {item.jobNumber || <span className="text-white/40">ไม่ระบุเลขงาน</span>}
+                                {item.jobNumber || (
+                                  <span className="text-white/40">ไม่ระบุเลขงาน</span>
+                                )}
                               </div>
                               {item.salesSeqNo > 0 && (
                                 <div className="text-[10px] text-[#A9B4C6]">
@@ -644,7 +915,8 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                                 {patientFull || <span className="text-white/40">-</span>}
                               </div>
                               <div className="text-[10px] text-[#A9B4C6] truncate">
-                                {item.doctorName || (item.patientHN ? `HN: ${item.patientHN}` : '-')}
+                                {item.doctorName ||
+                                  (item.patientHN ? `HN: ${item.patientHN}` : '-')}
                               </div>
                             </td>
                             <td className="py-2.5 px-2.5 whitespace-nowrap">
@@ -666,11 +938,15 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                                 {statusMeta.colorName}
                               </span>
                             </td>
-                            <td className="py-2.5 px-2.5 text-right font-mono text-white/90 whitespace-nowrap">
+                            <td className="py-2.5 px-2.5 text-right font-mono tabular-nums text-white/90 whitespace-nowrap">
                               {item.price > 0 ? item.price.toLocaleString('th-TH') : '-'}
                             </td>
                             <td className="py-2.5 px-3 text-right whitespace-nowrap">
-                              {match ? (
+                              {duplicateMode === 'import_all' ? (
+                                <span className="text-[11px] font-semibold text-emerald-300">
+                                  นำเข้าใหม่
+                                </span>
+                              ) : match ? (
                                 <span
                                   className={`text-[11px] font-semibold ${
                                     duplicateMode === 'update'
@@ -692,20 +968,57 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                     </tbody>
                   </table>
                 </div>
+
+                {/* Preview Table Pagination Bar */}
+                {filteredPreviewIndices.length > PREVIEW_PAGE_SIZE && (
+                  <div className="px-3.5 py-2.5 border-t border-white/10 bg-black/35 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#C8B6AE]">
+                    <span className="font-mono tabular-nums">
+                      แสดงแถว {pageStartItem.toLocaleString('th-TH')}–
+                      {pageEndItem.toLocaleString('th-TH')} จาก{' '}
+                      {filteredPreviewIndices.length.toLocaleString('th-TH')} รายการ
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={safePreviewPage <= 1}
+                        onClick={() => setPreviewPage((p) => Math.max(1, p - 1))}
+                        className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/12 border border-white/10 text-white disabled:opacity-35 inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                        ก่อนหน้า
+                      </button>
+                      <span className="px-2 font-mono tabular-nums text-white">
+                        หน้า {safePreviewPage} / {totalPreviewPages}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={safePreviewPage >= totalPreviewPages}
+                        onClick={() =>
+                          setPreviewPage((p) => Math.min(totalPreviewPages, p + 1))
+                        }
+                        className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/12 border border-white/10 text-white disabled:opacity-35 inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        ถัดไป
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
 
-          {/* Live Progress Bar */}
+          {/* Live Batch Progress Bar */}
           {importing && (
             <div className="rounded-2xl border border-[#FF9457]/35 bg-[#FF6B2B]/10 p-4 space-y-2">
-              <div className="flex items-center justify-between text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                 <span className="font-semibold text-white inline-flex items-center gap-2">
                   <Loader2 className="w-4 h-4 animate-spin text-[#FFCF90]" />
-                  กำลังบันทึกเคสเข้าฐานข้อมูล Firestore...
+                  {progress.label || 'กำลังบันทึกเคสเข้าฐานข้อมูล Firestore...'}
                 </span>
-                <span className="font-mono text-[#FFCF90] font-semibold">
-                  {progress.done} / {progress.total} ({progressPercent}%)
+                <span className="font-mono tabular-nums text-[#FFCF90] font-semibold">
+                  {progress.done.toLocaleString('th-TH')} / {progress.total.toLocaleString('th-TH')}{' '}
+                  ({progressPercent}%)
                 </span>
               </div>
               <div className="h-2 rounded-full bg-black/40 overflow-hidden">
@@ -722,20 +1035,36 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
         <div className="px-5 sm:px-6 py-4 border-t border-white/10 bg-black/30 flex flex-wrap items-center justify-between gap-3">
           <div className="text-xs text-[#A9B4C6]">
             {parsedCases.length > 0 ? (
-              <span>
-                พร้อมดำเนินการ:{' '}
-                <strong className="text-white">{summaryCounts.newCount} เคสใหม่</strong>
-                {summaryCounts.dupCount > 0 && (
-                  <>
-                    {' · '}
-                    <strong className={duplicateMode === 'update' ? 'text-sky-300' : 'text-amber-300'}>
-                      {duplicateMode === 'update'
-                        ? `อัปเดต ${summaryCounts.dupCount} เคสเดิม`
-                        : `ข้ามซ้ำ ${summaryCounts.dupCount} เคส`}
-                    </strong>
-                  </>
-                )}
-              </span>
+              duplicateMode === 'import_all' ? (
+                <span>
+                  พร้อมนำเข้าทั้งหมด:{' '}
+                  <strong className="text-emerald-300 font-mono tabular-nums">
+                    {summaryCounts.selectedTotal.toLocaleString('th-TH')} เคส
+                  </strong>{' '}
+                  (ไม่ตัดรายการซ้ำ)
+                </span>
+              ) : (
+                <span>
+                  พร้อมดำเนินการ:{' '}
+                  <strong className="text-white font-mono tabular-nums">
+                    {summaryCounts.newCount.toLocaleString('th-TH')} เคสใหม่
+                  </strong>
+                  {summaryCounts.dupCount > 0 && (
+                    <>
+                      {' · '}
+                      <strong
+                        className={`font-mono tabular-nums ${
+                          duplicateMode === 'update' ? 'text-sky-300' : 'text-amber-300'
+                        }`}
+                      >
+                        {duplicateMode === 'update'
+                          ? `อัปเดต ${summaryCounts.dupCount.toLocaleString('th-TH')} เคสเดิม`
+                          : `ข้ามซ้ำ ${summaryCounts.dupCount.toLocaleString('th-TH')} เคส`}
+                      </strong>
+                    </>
+                  )}
+                </span>
+              )
             ) : (
               <span>เลือกไฟล์ Excel / CSV หรือวางตารางเพื่อตรวจสอบก่อนบันทึก</span>
             )}
@@ -764,7 +1093,7 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
               ) : (
                 <>
                   <Upload className="w-4 h-4" />
-                  ยืนยันนำเข้า {summaryCounts.selectedTotal} รายการ
+                  ยืนยันนำเข้า {summaryCounts.selectedTotal.toLocaleString('th-TH')} รายการ
                 </>
               )}
             </button>

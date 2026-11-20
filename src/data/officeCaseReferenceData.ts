@@ -746,12 +746,21 @@ export type ImportDetectedFormat =
   | 'flexible_headers'
   | 'unknown';
 
+export interface ParsedSheetResult {
+  sheetName: string;
+  cases: OfficeCaseSeedInput[];
+  detectedFormat: ImportDetectedFormat;
+  totalRowsScanned: number;
+  warnings: string[];
+}
+
 export interface ParsedOfficeImportResult {
   cases: OfficeCaseSeedInput[];
   detectedFormat: ImportDetectedFormat;
   sheetName: string;
   totalRowsScanned: number;
   warnings: string[];
+  sheetResults?: ParsedSheetResult[];
 }
 
 function cleanCell(v: unknown): string {
@@ -1062,8 +1071,8 @@ type FlexibleFieldKey =
   | `pay:${OfficePaymentChannel}`;
 
 const FLEXIBLE_HEADER_ALIASES: Array<{ key: FlexibleFieldKey; patterns: string[] }> = [
-  { key: 'salesSeqNo', patterns: ['ลำดับขายทั้งหมด', 'ลำดับขาย', 'sales seq', 'seq no', 'ลำดับที่'] },
-  { key: 'workflowStatus', patterns: ['สถานะสีหน้าจอรับงาน', 'สถานะสี', 'สถานะเคส', 'สถานะงาน', 'workflow', 'status'] },
+  { key: 'salesSeqNo', patterns: ['ลำดับขายทั้งหมด', 'ลำดับขาย', 'sales seq', 'seq no', 'ลำดับที่', 'ลำดับ', 'no.', 'no'] },
+  { key: 'workflowStatus', patterns: ['สถานะสีหน้าจอรับงาน', 'สถานะสี', 'สถานะเคส', 'สถานะงาน', 'สถานะ', 'workflow', 'status'] },
   { key: 'pay:patient_direct', patterns: ['คนไข้จ่ายเองกับบริษัท', 'คนไข้จ่ายเอง'] },
   { key: 'pay:deposit_50_first', patterns: ['มัดจำ50%แรก', 'มัดจำ 50% แรก', 'มัดจำ50%'] },
   { key: 'pay:balance_50_before_ship', patterns: ['ก่อนส่ง 50%หลัง', 'ก่อนส่ง50%หลัง', '50%หลัง'] },
@@ -1074,7 +1083,7 @@ const FLEXIBLE_HEADER_ALIASES: Array<{ key: FlexibleFieldKey; patterns: string[]
   { key: 'pay:ctec', patterns: ['ซีเทค', 'ctec'] },
   { key: 'pay:wimanrat', patterns: ['วิมานรัตร์', 'วิมานรัตน์'] },
   { key: 'hospitalCategory', patterns: ['ประเภทโรงพยาบาล', 'ประเภทรพ', 'hospital category'] },
-  { key: 'jobNumber', patterns: ['เลขที่รับงาน', 'เลขรับงาน', 'เลขเคส', 'รหัสเคส', 'job no', 'job number', 'case no'] },
+  { key: 'jobNumber', patterns: ['เลขที่รับงาน', 'เลขรับงาน', 'เลขที่งาน', 'เลขงาน', 'รหัสงาน', 'เลขเคส', 'รหัสเคส', 'job no', 'job number', 'case no', 'job id'] },
   { key: 'monthlySeq', patterns: ['ลำดับแต่ละเดือน', 'ลำดับเดือน', 'monthly seq'] },
   { key: 'icrNumber', patterns: ['icr no', 'icr', 'เลข icr'] },
   { key: 'productionPlanNo', patterns: ['ใบวางแผนผลิต', 'แผนผลิต', 'production plan'] },
@@ -1082,40 +1091,40 @@ const FLEXIBLE_HEADER_ALIASES: Array<{ key: FlexibleFieldKey; patterns: string[]
   { key: 'productionSpec', patterns: ['สถานะการผลิต', 'จุดยึด', 'รายละเอียดผลิต', 'สเปกผลิต', 'production spec'] },
   { key: 'barcode', patterns: ['รหัสบาร์โค้ด', 'บาร์โค้ด', 'barcode'] },
   { key: 'patientPrefix', patterns: ['คำนำหน้า', 'prefix'] },
-  { key: 'patientFullName', patterns: ['ชื่อ-สกุล', 'ชื่อสกุล', 'ชื่อคนไข้', 'ชื่อผู้ป่วย', 'patient name'] },
+  { key: 'patientFullName', patterns: ['ชื่อ-สกุล', 'ชื่อ-นามสกุล', 'ชื่อ สกุล', 'ชื่อ นามสกุล', 'ชื่อสกุล', 'ชื่อคนไข้', 'ชื่อผู้ป่วย', 'ผู้ป่วย', 'คนไข้', 'patient name', 'patient'] },
   { key: 'patientFirstName', patterns: ['ชื่อจริง', 'ชื่อ', 'first name'] },
   { key: 'patientLastName', patterns: ['นามสกุล', 'สกุล', 'last name', 'surname'] },
-  { key: 'patientHN', patterns: ['hn', 'เลข hn', 'รหัสคนไข้'] },
+  { key: 'patientHN', patterns: ['hn', 'เลข hn', 'รหัสคนไข้', 'h.n.'] },
   { key: 'patientAge', patterns: ['อายุ', 'age'] },
-  { key: 'hospitalName', patterns: ['โรงพยาบาล', 'รพ.', 'รพ', 'ชื่อโรงพยาบาล', 'hospital'] },
-  { key: 'doctorName', patterns: ['แพทย์', 'หมอ', 'ชื่อแพทย์', 'ชื่อหมอ', 'doctor', 'surgeon'] },
-  { key: 'productCode', patterns: ['รหัสสินค้า', 'รหัสชิ้นงาน', 'product code', 'sku'] },
+  { key: 'hospitalName', patterns: ['โรงพยาบาล', 'ชื่อโรงพยาบาล', 'สถานพยาบาล', 'รพ.', 'รพ', 'hospital', 'hospital name'] },
+  { key: 'doctorName', patterns: ['แพทย์ผู้ผ่าตัด', 'แพทย์เจ้าของไข้', 'แพทย์', 'หมอผ่าตัด', 'หมอ', 'ชื่อแพทย์', 'ชื่อหมอ', 'doctor', 'surgeon'] },
+  { key: 'productCode', patterns: ['รหัสสินค้า', 'รหัสชิ้นงาน', 'สินค้า', 'product code', 'product', 'sku'] },
   { key: 'sidePosition', patterns: ['ตำแหน่ง', 'ข้าง', 'side', 'left/right'] },
   { key: 'anatomicalArea', patterns: ['บริเวณที่สร้าง', 'บริเวณ', 'อวัยวะ', 'anatomical'] },
   { key: 'surgeryType', patterns: ['ประเภทการผ่าตัด', 'การผ่าตัด', 'surgery type'] },
   { key: 'materialType', patterns: ['ลักษณะชิ้นงาน', 'วัสดุ', 'material'] },
   { key: 'rpModelQty', patterns: ['rp model', 'จำนวน rp', 'rp'] },
-  { key: 'implantQty', patterns: ['implant', 'จำนวนชิ้นงาน', 'จำนวน implant'] },
-  { key: 'patientPhone', patterns: ['เบอร์คนไข้', 'โทรคนไข้', 'patient phone'] },
-  { key: 'doctorPhone', patterns: ['เบอร์แพทย์', 'เบอร์หมอ', 'doctor phone'] },
-  { key: 'receivedDate', patterns: ['วันรับงาน', 'วันที่รับงาน', 'วันรับเคส', 'received date'] },
-  { key: 'surgeryDate', patterns: ['วันผ่าตัด', 'วันที่ผ่าตัด', 'surgery date'] },
-  { key: 'caseReceiver', patterns: ['ผู้รับเคส', 'รับเคส', 'ผู้รับงาน', 'receiver'] },
-  { key: 'sterilizeOutDate', patterns: ['วันส่งออก', 'ส่งฆ่าเชื้อ', 'sterilize out'] },
+  { key: 'implantQty', patterns: ['implant', 'จำนวนชิ้นงาน', 'จำนวน implant', 'จำนวน'] },
+  { key: 'patientPhone', patterns: ['เบอร์คนไข้', 'โทรคนไข้', 'เบอร์โทรคนไข้', 'patient phone'] },
+  { key: 'doctorPhone', patterns: ['เบอร์แพทย์', 'เบอร์หมอ', 'โทรแพทย์', 'doctor phone'] },
+  { key: 'receivedDate', patterns: ['วันรับงาน', 'วันที่รับงาน', 'วันรับเคส', 'วันที่รับเคส', 'วันรับ', 'received date', 'วันที่'] },
+  { key: 'surgeryDate', patterns: ['วันผ่าตัด', 'วันที่ผ่าตัด', 'surgery date', 'op date'] },
+  { key: 'caseReceiver', patterns: ['ผู้รับเคส', 'รับเคส', 'ผู้รับงาน', 'ผู้รับผิดชอบ', 'เซลล์', 'ผู้แทนขาย', 'receiver', 'sales'] },
+  { key: 'sterilizeOutDate', patterns: ['วันส่งออก', 'ส่งฆ่าเชื้อ', 'วันที่ส่งฆ่าเชื้อ', 'sterilize out'] },
   { key: 'sterilizeReturnDate', patterns: ['วันรับเข้าฆ่าเชื้อ', 'รับกลับฆ่าเชื้อ', 'ฆ่าเชื้อ: วันรับเข้า', 'sterilize return'] },
   { key: 'radiationMinKgy', patterns: ['ปริมาณรังสีต่ำสุด', 'รังสีต่ำสุด', 'min kgy'] },
   { key: 'radiationMaxKgy', patterns: ['ปริมาณรังสีสูงสุด', 'รังสีสูงสุด', 'max kgy'] },
   { key: 'doseUniformity', patterns: ['dose uniformity', 'uniformity'] },
   { key: 'qcReceiveDate', patterns: ['วันรับเข้า qa', 'วันรับเข้า qc', 'qc date', 'qa date'] },
   { key: 'certificateNo', patterns: ['certificate no', 'certificate', 'เลขใบรับรอง', 'cert'] },
-  { key: 'deliveryDate', patterns: ['วันที่ส่งงาน', 'วันจัดส่ง', 'วันที่จัดส่ง', 'delivery date'] },
+  { key: 'deliveryDate', patterns: ['วันที่ส่งงาน', 'วันจัดส่ง', 'วันที่จัดส่ง', 'วันส่งงาน', 'วันส่งของ', 'delivery date'] },
   { key: 'deliveryChannel', patterns: ['ส่งที่', 'ขนส่ง', 'ช่องทางจัดส่ง', 'delivery channel'] },
   { key: 'deliveredBy', patterns: ['นำส่ง', 'ผู้นำส่ง', 'delivered by'] },
-  { key: 'emsTrackingNo', patterns: ['เลขที่ ems', 'เลข ems', 'เลขพัสดุ', 'tracking', 'ems'] },
-  { key: 'price', patterns: ['ราคาชิ้นงาน', 'ราคา', 'มูลค่า', 'ยอดเงิน', 'price', 'amount'] },
-  { key: 'paymentDetails', patterns: ['รายละเอียดการจ่ายเงิน', 'การชำระเงิน', 'payment detail'] },
+  { key: 'emsTrackingNo', patterns: ['เลขที่ ems', 'เลข ems', 'เลขพัสดุ', 'เลขติดตามพัสดุ', 'tracking no', 'tracking', 'ems'] },
+  { key: 'price', patterns: ['ราคาชิ้นงาน', 'ราคาขาย', 'ราคา', 'มูลค่า', 'ยอดเงิน', 'ยอดรวม', 'ค่าใช้จ่าย', 'price', 'amount'] },
+  { key: 'paymentDetails', patterns: ['รายละเอียดการจ่ายเงิน', 'การชำระเงิน', 'ชำระเงิน', 'payment detail'] },
   { key: 'paymentConditionNote', patterns: ['เงื่อนไขการชำระ', 'เงื่อนไขจ่าย', 'payment condition'] },
-  { key: 'shippingInfo', patterns: ['ข้อมูลการส่งของ', 'ที่อยู่จัดส่ง', 'shipping'] },
+  { key: 'shippingInfo', patterns: ['ข้อมูลการส่งของ', 'ที่อยู่จัดส่ง', 'ที่อยู่ส่งของ', 'shipping'] },
   { key: 'receiptAddress', patterns: ['ข้อมูลการส่งใบเสร็จ', 'ที่อยู่ใบเสร็จ', 'receipt address'] },
   { key: 'packageInfo', patterns: ['package', 'แพ็กเกจ', 'บรรจุภัณฑ์'] },
   { key: 'remarks', patterns: ['หมายเหตุ', 'บันทึกเพิ่มเติม', 'remarks', 'note', 'notes'] },
@@ -1371,8 +1380,8 @@ function parseFlexibleHeaderRows(
   let bestMap = new Map<number, FlexibleFieldKey>();
   let icrNumber = defaultIcr;
 
-  // Scan top 15 rows to locate the best header row (and capture ICR if present)
-  const scanLimit = Math.min(rows.length, 15);
+  // Scan top 30 rows to locate the best header row (supports single or 2-row stacked Excel headers)
+  const scanLimit = Math.min(rows.length, 30);
   for (let rIdx = 0; rIdx < scanLimit; rIdx++) {
     const row = rows[rIdx];
     if (!Array.isArray(row)) continue;
@@ -1381,17 +1390,27 @@ function parseFlexibleHeaderRows(
     const icrMatch = rowText.match(/ICR\d+\/\d+/i);
     if (icrMatch) icrNumber = icrMatch[0].toUpperCase();
 
+    const prevRow = rIdx > 0 && Array.isArray(rows[rIdx - 1]) ? rows[rIdx - 1] : null;
     const colMap = new Map<number, FlexibleFieldKey>();
     const usedKeys = new Set<FlexibleFieldKey>();
 
-    row.forEach((cell, cIdx) => {
-      const normalized = normalizeHeader(String(cell ?? ''));
-      const matched = matchHeaderToKey(normalized, usedKeys);
+    const maxCols = Math.max(row.length, prevRow ? prevRow.length : 0);
+    for (let cIdx = 0; cIdx < maxCols; cIdx++) {
+      const curNorm = normalizeHeader(String(row[cIdx] ?? ''));
+      let matched = matchHeaderToKey(curNorm, usedKeys);
+      if (!matched && prevRow) {
+        const parentNorm = normalizeHeader(String(prevRow[cIdx] ?? ''));
+        if (parentNorm && curNorm) {
+          matched = matchHeaderToKey(`${parentNorm} ${curNorm}`, usedKeys);
+        } else if (parentNorm && !curNorm) {
+          matched = matchHeaderToKey(parentNorm, usedKeys);
+        }
+      }
       if (matched) {
         colMap.set(cIdx, matched);
         usedKeys.add(matched);
       }
-    });
+    }
 
     if (colMap.size > bestMap.size) {
       bestMap = colMap;
@@ -1415,17 +1434,25 @@ function parseFlexibleHeaderRows(
     return [];
   }
 
+  // Pre-build O(1) key -> column index map and payment columns array for high-speed 500+ row parsing
+  const keyToCol = new Map<FlexibleFieldKey, number>();
+  const payCols: Array<{ colIdx: number; channel: OfficePaymentChannel }> = [];
+  for (const [colIdx, k] of bestMap.entries()) {
+    keyToCol.set(k, colIdx);
+    if (k.startsWith('pay:')) {
+      payCols.push({ colIdx, channel: k.slice(4) as OfficePaymentChannel });
+    }
+  }
+
   const parsed: OfficeCaseSeedInput[] = [];
 
   for (let rIdx = bestHeaderIdx + 1; rIdx < rows.length; rIdx++) {
     const row = rows[rIdx];
-    if (!Array.isArray(row)) continue;
+    if (!Array.isArray(row) || row.length === 0) continue;
 
     const getVal = (key: FlexibleFieldKey): string => {
-      for (const [colIdx, k] of bestMap.entries()) {
-        if (k === key) return cleanCell(row[colIdx]);
-      }
-      return '';
+      const colIdx = keyToCol.get(key);
+      return colIdx !== undefined ? cleanCell(row[colIdx]) : '';
     };
 
     let patientPrefix = getVal('patientPrefix');
@@ -1453,12 +1480,10 @@ function parseFlexibleHeaderRows(
     if (joined.includes('รวมทั้งหมด') || joined.startsWith('total')) continue;
 
     const paymentChannels: OfficePaymentChannel[] = [];
-    for (const [colIdx, k] of bestMap.entries()) {
-      if (k.startsWith('pay:')) {
-        const marker = cleanCell(row[colIdx]);
-        if (marker && marker !== '-' && marker !== '0') {
-          paymentChannels.push(k.slice(4) as OfficePaymentChannel);
-        }
+    for (let p = 0; p < payCols.length; p++) {
+      const marker = cleanCell(row[payCols[p].colIdx]);
+      if (marker && marker !== '-' && marker !== '0') {
+        paymentChannels.push(payCols[p].channel);
       }
     }
 
@@ -1559,26 +1584,17 @@ export function parseMatrixToOfficeCases(
     };
   }
 
-  // 2. Check if original CTEC 54-column ledger (header match OR classic column geometry)
-  const looksLikeCtecRaw =
-    rows.slice(0, 10).some((row) => {
-      if (!Array.isArray(row)) return false;
-      const joined = row.map((c) => cleanCell(c)).join(' ');
-      return (
-        joined.includes('คนไข้จ่ายเองกับบริษัท') ||
-        joined.includes('CTEC Customized') ||
-        (cleanCell(row[11]).includes('เลขที่รับงาน') && cleanCell(row[22]).includes('โรงพยาบาล'))
-      );
-    }) ||
-    rows.some(
-      (row) =>
-        Array.isArray(row) &&
-        row.length >= 25 &&
-        /^\d+$/.test(cleanCell(row[0]).replace(/,/g, '')) &&
-        Boolean(cleanCell(row[11]) || cleanCell(row[22]))
+  // 2. Check if original CTEC 54-column ledger (explicit header signature ONLY so custom Excel files are never hijacked)
+  const hasCtecRawSignature = rows.slice(0, 15).some((row) => {
+    if (!Array.isArray(row)) return false;
+    const joined = row.map((c) => cleanCell(c)).join(' ');
+    return (
+      (joined.includes('คนไข้จ่ายเองกับบริษัท') && cleanCell(row[11]).includes('เลขที่รับงาน')) ||
+      (cleanCell(row[11]).includes('เลขที่รับงาน') && cleanCell(row[22]).includes('โรงพยาบาล'))
     );
+  });
 
-  if (looksLikeCtecRaw) {
+  if (hasCtecRawSignature) {
     const cases = parseRawCtecLedgerRows(rows, defaultIcr);
     if (cases.length > 0) {
       return {
@@ -1591,7 +1607,7 @@ export function parseMatrixToOfficeCases(
     }
   }
 
-  // 3. Fallback: Flexible Thai/English header-mapping parser (works on any custom spreadsheet!)
+  // 3. Flexible Thai/English header-mapping parser (works on any Excel/CSV/Sheets layout & shifted columns!)
   const flexibleCases = parseFlexibleHeaderRows(rows, defaultIcr);
   if (flexibleCases.length > 0) {
     return {
@@ -1601,6 +1617,27 @@ export function parseMatrixToOfficeCases(
       totalRowsScanned: rows.length,
       warnings,
     };
+  }
+
+  // 4. Last-resort headerless CTEC 54-column raw geometry fallback (only if >= 45 columns)
+  const looksLikeHeaderlessCtecRaw = rows.some(
+    (row) =>
+      Array.isArray(row) &&
+      row.length >= 45 &&
+      /^\d+$/.test(cleanCell(row[0]).replace(/,/g, '')) &&
+      Boolean(cleanCell(row[11]) || cleanCell(row[22]))
+  );
+  if (looksLikeHeaderlessCtecRaw) {
+    const cases = parseRawCtecLedgerRows(rows, defaultIcr);
+    if (cases.length > 0) {
+      return {
+        cases,
+        detectedFormat: 'ctec_raw_ledger',
+        sheetName,
+        totalRowsScanned: rows.length,
+        warnings,
+      };
+    }
   }
 
   warnings.push(
@@ -1657,14 +1694,16 @@ export async function parseCtecOfficeUploadDetailed(
     return parseMatrixToOfficeCases(matrix, file.name);
   }
 
-  // Binary Excel (.xlsx / .xls): scan every worksheet and return the first valid match
+  // Binary Excel (.xlsx / .xls): scan every worksheet, skip empty trailing rows, and retain all sheets with data
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: false });
+  const sheetResults: ParsedSheetResult[] = [];
   let bestResult: ParsedOfficeImportResult = {
     cases: [],
     detectedFormat: 'unknown',
     sheetName: workbook.SheetNames[0] || file.name,
     totalRowsScanned: 0,
     warnings: [],
+    sheetResults: [],
   };
 
   for (const sheetName of workbook.SheetNames) {
@@ -1674,14 +1713,28 @@ export async function parseCtecOfficeUploadDetailed(
       header: 1,
       defval: '',
       raw: false,
+      blankrows: false,
     });
+    if (rows.length === 0) continue;
     const res = parseMatrixToOfficeCases(rows, sheetName);
+    if (res.cases.length > 0) {
+      sheetResults.push({
+        sheetName: res.sheetName,
+        cases: res.cases,
+        detectedFormat: res.detectedFormat,
+        totalRowsScanned: res.totalRowsScanned,
+        warnings: res.warnings,
+      });
+    }
     if (res.cases.length > bestResult.cases.length) {
       bestResult = res;
     }
   }
 
-  return bestResult;
+  return {
+    ...bestResult,
+    sheetResults,
+  };
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   doc,
   serverTimestamp,
   updateDoc,
+  writeBatch,
 } from 'firebase/firestore';
 import {
   auth,
@@ -121,6 +122,66 @@ function getCaseDisplayLabel(fields: {
   return `${code} · ${place}`.slice(0, 175);
 }
 
+type SanitizedOfficeCaseFields = ReturnType<typeof sanitizePayloadFields>;
+
+function buildCreateOfficeCasePayload(
+  fields: SanitizedOfficeCaseFields,
+  actorUid: string,
+  actorDisplayName: string
+) {
+  return {
+    orgId: ORG_ID,
+    ...fields,
+    createdBy: actorUid,
+    createdByName: actorDisplayName,
+    updatedBy: actorUid,
+    updatedByName: actorDisplayName,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+}
+
+function buildUpdateOfficeCasePayload(
+  existingCase: OfficeCase,
+  fields: SanitizedOfficeCaseFields,
+  isAdmin: boolean,
+  actorUid: string,
+  actorDisplayName: string
+) {
+  const isLockedDelivered = existingCase.workflowStatus === 'delivered' && !isAdmin;
+  // Tier 3 compliance: for non-admin editing an already-delivered case, only mutate allowed post-delivery fields
+  return isLockedDelivered
+    ? {
+        paymentChannels: fields.paymentChannels,
+        price: fields.price,
+        paymentDetails: fields.paymentDetails,
+        paymentConditionNote: fields.paymentConditionNote,
+        sterilizeReturnDate: fields.sterilizeReturnDate,
+        radiationMinKgy: fields.radiationMinKgy,
+        radiationMaxKgy: fields.radiationMaxKgy,
+        doseUniformity: fields.doseUniformity,
+        qcReceiveDate: fields.qcReceiveDate,
+        certificateNo: fields.certificateNo,
+        deliveryDate: fields.deliveryDate,
+        deliveryChannel: fields.deliveryChannel,
+        deliveredBy: fields.deliveredBy,
+        emsTrackingNo: fields.emsTrackingNo,
+        shippingInfo: fields.shippingInfo,
+        receiptAddress: fields.receiptAddress,
+        packageInfo: fields.packageInfo,
+        remarks: fields.remarks,
+        updatedBy: actorUid,
+        updatedByName: actorDisplayName,
+        updatedAt: serverTimestamp(),
+      }
+    : {
+        ...fields,
+        updatedBy: actorUid,
+        updatedByName: actorDisplayName,
+        updatedAt: serverTimestamp(),
+      };
+}
+
 export async function createOfficeCase(
   input: OfficeCaseSeedInput,
   actor: UserProfile,
@@ -134,16 +195,10 @@ export async function createOfficeCase(
     clampString(actor.displayName || auth.currentUser?.displayName, 120) || 'แอดมินออฟฟิศ';
 
   try {
-    const docRef = await addDoc(collection(db, path), {
-      orgId: ORG_ID,
-      ...fields,
-      createdBy: actorUid,
-      createdByName: actorDisplayName,
-      updatedBy: actorUid,
-      updatedByName: actorDisplayName,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    const docRef = await addDoc(
+      collection(db, path),
+      buildCreateOfficeCasePayload(fields, actorUid, actorDisplayName)
+    );
 
     if (!options?.silent) {
       await logAuditEvent({
@@ -186,44 +241,19 @@ export async function updateOfficeCase(
   const path = `officeCases/${existingCase.id}`;
   const fields = sanitizePayloadFields(input);
   const isAdmin = actor.role === 'admin';
-  const isLockedDelivered = existingCase.workflowStatus === 'delivered' && !isAdmin;
   const label = getCaseDisplayLabel(fields);
 
   const actorUid = auth.currentUser?.uid || actor.uid;
   const actorDisplayName =
     clampString(actor.displayName || auth.currentUser?.displayName, 120) || 'แอดมินออฟฟิศ';
 
-  // Tier 3 compliance: for non-admin editing an already-delivered case, only mutate allowed post-delivery fields
-  const updatePayload = isLockedDelivered
-    ? {
-        paymentChannels: fields.paymentChannels,
-        price: fields.price,
-        paymentDetails: fields.paymentDetails,
-        paymentConditionNote: fields.paymentConditionNote,
-        sterilizeReturnDate: fields.sterilizeReturnDate,
-        radiationMinKgy: fields.radiationMinKgy,
-        radiationMaxKgy: fields.radiationMaxKgy,
-        doseUniformity: fields.doseUniformity,
-        qcReceiveDate: fields.qcReceiveDate,
-        certificateNo: fields.certificateNo,
-        deliveryDate: fields.deliveryDate,
-        deliveryChannel: fields.deliveryChannel,
-        deliveredBy: fields.deliveredBy,
-        emsTrackingNo: fields.emsTrackingNo,
-        shippingInfo: fields.shippingInfo,
-        receiptAddress: fields.receiptAddress,
-        packageInfo: fields.packageInfo,
-        remarks: fields.remarks,
-        updatedBy: actorUid,
-        updatedByName: actorDisplayName,
-        updatedAt: serverTimestamp(),
-      }
-    : {
-        ...fields,
-        updatedBy: actorUid,
-        updatedByName: actorDisplayName,
-        updatedAt: serverTimestamp(),
-      };
+  const updatePayload = buildUpdateOfficeCasePayload(
+    existingCase,
+    fields,
+    isAdmin,
+    actorUid,
+    actorDisplayName
+  );
 
   try {
     await updateDoc(doc(db, 'officeCases', existingCase.id), updatePayload);
@@ -383,9 +413,11 @@ export async function deleteOfficeCase(caseItem: OfficeCase, actor: UserProfile)
   }
 }
 
+export type DuplicateImportMode = 'skip' | 'update' | 'import_all';
+
 export interface BatchImportOptions {
-  duplicateMode?: 'skip' | 'update';
-  onProgress?: (completed: number, total: number) => void;
+  duplicateMode?: DuplicateImportMode;
+  onProgress?: (completed: number, total: number, batchLabel?: string) => void;
   sourceLabel?: string;
 }
 
@@ -397,28 +429,52 @@ export interface BatchImportResult {
   errors: string[];
 }
 
+export interface ExistingCaseLookup {
+  byJobNumber: Map<string, OfficeCase>;
+  bySeqWithoutJob: Map<number, OfficeCase>;
+}
+
+/**
+ * Builds O(1) lookup maps for existing cases so 500–5,000+ rows can be checked instantly.
+ * Only indexes salesSeqNo when a case has NO jobNumber, preventing false duplicate matches
+ * when monthly/sheet sequences restart at 1 with distinct job numbers.
+ */
+export function buildExistingCaseLookup(existingCases: OfficeCase[]): ExistingCaseLookup {
+  const byJobNumber = new Map<string, OfficeCase>();
+  const bySeqWithoutJob = new Map<number, OfficeCase>();
+
+  for (const c of existingCases) {
+    const jobKey = c.jobNumber.trim().toLowerCase();
+    if (jobKey) {
+      if (!byJobNumber.has(jobKey)) byJobNumber.set(jobKey, c);
+    } else if (c.salesSeqNo > 0) {
+      if (!bySeqWithoutJob.has(c.salesSeqNo)) bySeqWithoutJob.set(c.salesSeqNo, c);
+    }
+  }
+
+  return { byJobNumber, bySeqWithoutJob };
+}
+
+export function matchCaseInLookup(
+  item: OfficeCaseSeedInput,
+  lookup: ExistingCaseLookup
+): OfficeCase | undefined {
+  const jobKey = item.jobNumber.trim().toLowerCase();
+  if (jobKey) {
+    return lookup.byJobNumber.get(jobKey);
+  }
+  if (item.salesSeqNo > 0) {
+    return lookup.bySeqWithoutJob.get(item.salesSeqNo);
+  }
+  return undefined;
+}
+
 export function findMatchingExistingCase(
   item: OfficeCaseSeedInput,
   existingCases: OfficeCase[]
 ): OfficeCase | undefined {
-  const jobKey = item.jobNumber.trim().toLowerCase();
-  if (jobKey) {
-    const byJob = existingCases.find(
-      (c) => c.jobNumber.trim().toLowerCase() === jobKey
-    );
-    if (byJob) return byJob;
-  }
-
-  if (item.salesSeqNo > 0) {
-    const bySeq = existingCases.find((c) => {
-      if (c.salesSeqNo !== item.salesSeqNo) return false;
-      if (!jobKey && !c.jobNumber.trim()) return true;
-      return c.jobNumber.trim().toLowerCase() === jobKey;
-    });
-    if (bySeq) return bySeq;
-  }
-
-  return undefined;
+  const lookup = buildExistingCaseLookup(existingCases);
+  return matchCaseInLookup(item, lookup);
 }
 
 function mergeImportedIntoExisting(
@@ -500,75 +556,209 @@ function mergeImportedIntoExisting(
   };
 }
 
+const IMPORT_BATCH_CHUNK_SIZE = 100;
+const MAX_DETAILED_IMPORT_ERRORS = 25;
+
+type PendingBatchOp =
+  | {
+      kind: 'create';
+      rowLabel: string;
+      payload: ReturnType<typeof buildCreateOfficeCasePayload>;
+    }
+  | {
+      kind: 'update';
+      docId: string;
+      rowLabel: string;
+      payload: ReturnType<typeof buildUpdateOfficeCasePayload>;
+    };
+
+async function commitOpsBatch(ops: PendingBatchOp[]): Promise<void> {
+  const batch = writeBatch(db);
+  const colRef = collection(db, 'officeCases');
+  for (const op of ops) {
+    if (op.kind === 'create') {
+      batch.set(doc(colRef), op.payload);
+    } else {
+      batch.update(doc(db, 'officeCases', op.docId), op.payload);
+    }
+  }
+  await batch.commit();
+}
+
+async function commitOpsWithResilientFallback(
+  ops: PendingBatchOp[],
+  counters: {
+    imported: number;
+    updated: number;
+    failed: number;
+    errors: string[];
+  }
+): Promise<void> {
+  if (ops.length === 0) return;
+
+  try {
+    await commitOpsBatch(ops);
+    for (const op of ops) {
+      if (op.kind === 'create') counters.imported += 1;
+      else counters.updated += 1;
+    }
+  } catch (err) {
+    if (ops.length === 1) {
+      counters.failed += 1;
+      if (counters.errors.length < MAX_DETAILED_IMPORT_ERRORS) {
+        counters.errors.push(
+          `${ops[0].rowLabel}: ${getFriendlyFirestoreError(err, 'บันทึกไม่สำเร็จ')}`
+        );
+      }
+      return;
+    }
+
+    // Split failed batch in half so valid rows still commit and only faulty rows fail
+    const mid = Math.ceil(ops.length / 2);
+    await commitOpsWithResilientFallback(ops.slice(0, mid), counters);
+    await commitOpsWithResilientFallback(ops.slice(mid), counters);
+  }
+}
+
 export async function importOfficeCasesBatch(
   items: OfficeCaseSeedInput[],
   existingCases: OfficeCase[],
   actor: UserProfile,
   options?: BatchImportOptions
 ): Promise<BatchImportResult> {
-  const duplicateMode = options?.duplicateMode ?? 'skip';
+  const duplicateMode: DuplicateImportMode = options?.duplicateMode ?? 'skip';
   const total = items.length;
+  const isAdmin = actor.role === 'admin';
+  const actorUid = auth.currentUser?.uid || actor.uid;
+  const actorDisplayName =
+    clampString(actor.displayName || auth.currentUser?.displayName, 120) || 'แอดมินออฟฟิศ';
 
-  // Build mutable lookup maps for existing + newly imported rows in this batch
-  const byJobNumber = new Map<string, OfficeCase | 'imported'>();
-  const bySalesSeq = new Map<number, OfficeCase | 'imported'>();
+  // O(1) lookup maps for existing records + rows already queued inside this import batch
+  const lookup = buildExistingCaseLookup(existingCases);
+  const seenBatchJobs = new Set<string>();
+  const seenBatchSeqNoJob = new Set<number>();
 
-  existingCases.forEach((c) => {
-    const jobKey = c.jobNumber.trim().toLowerCase();
-    if (jobKey) byJobNumber.set(jobKey, c);
-    if (c.salesSeqNo > 0) bySalesSeq.set(c.salesSeqNo, c);
-  });
-
-  let imported = 0;
-  let updated = 0;
+  const pendingOps: PendingBatchOp[] = [];
   let skipped = 0;
-  let failed = 0;
-  const errors: string[] = [];
 
   for (let idx = 0; idx < items.length; idx++) {
     const item = items[idx];
-    const jobKey = item.jobNumber.trim().toLowerCase();
-    const matchedByJob = jobKey ? byJobNumber.get(jobKey) : undefined;
-    const matchedBySeq =
-      !matchedByJob && item.salesSeqNo > 0 ? bySalesSeq.get(item.salesSeqNo) : undefined;
-    const existingMatch = matchedByJob ?? matchedBySeq;
+    const rowLabel =
+      item.jobNumber.trim() ||
+      item.patientFirstName.trim() ||
+      item.hospitalName.trim() ||
+      `แถวที่ ${idx + 1}`;
 
-    try {
-      if (existingMatch) {
-        if (duplicateMode === 'update' && existingMatch !== 'imported') {
-          const merged = mergeImportedIntoExisting(existingMatch, item);
-          await updateOfficeCase(existingMatch, merged, actor, { silent: true });
-          updated += 1;
-        } else {
-          skipped += 1;
-        }
-      } else {
-        await createOfficeCase(item, actor, { silent: true });
-        if (jobKey) byJobNumber.set(jobKey, 'imported');
-        if (item.salesSeqNo > 0) bySalesSeq.set(item.salesSeqNo, 'imported');
-        imported += 1;
-      }
-    } catch (err) {
-      failed += 1;
-      const rowLabel =
-        item.jobNumber ||
-        item.patientFirstName ||
-        item.hospitalName ||
-        `แถวที่ ${idx + 1}`;
-      errors.push(`${rowLabel}: ${getFriendlyFirestoreError(err, 'บันทึกไม่สำเร็จ')}`);
-    } finally {
-      options?.onProgress?.(idx + 1, total);
+    if (duplicateMode === 'import_all') {
+      const fields = sanitizePayloadFields(item);
+      pendingOps.push({
+        kind: 'create',
+        rowLabel,
+        payload: buildCreateOfficeCasePayload(fields, actorUid, actorDisplayName),
+      });
+      continue;
     }
+
+    const jobKey = item.jobNumber.trim().toLowerCase();
+    const existingMatch = matchCaseInLookup(item, lookup);
+    const seenInSameBatch = jobKey
+      ? seenBatchJobs.has(jobKey)
+      : item.salesSeqNo > 0 && seenBatchSeqNoJob.has(item.salesSeqNo);
+
+    if (existingMatch) {
+      if (duplicateMode === 'update' && !seenInSameBatch) {
+        const merged = mergeImportedIntoExisting(existingMatch, item);
+        const fields = sanitizePayloadFields(merged);
+        pendingOps.push({
+          kind: 'update',
+          docId: existingMatch.id,
+          rowLabel,
+          payload: buildUpdateOfficeCasePayload(
+            existingMatch,
+            fields,
+            isAdmin,
+            actorUid,
+            actorDisplayName
+          ),
+        });
+        if (jobKey) seenBatchJobs.add(jobKey);
+        else if (item.salesSeqNo > 0) seenBatchSeqNoJob.add(item.salesSeqNo);
+      } else {
+        skipped += 1;
+      }
+      continue;
+    }
+
+    if (seenInSameBatch) {
+      skipped += 1;
+      continue;
+    }
+
+    const fields = sanitizePayloadFields(item);
+    pendingOps.push({
+      kind: 'create',
+      rowLabel,
+      payload: buildCreateOfficeCasePayload(fields, actorUid, actorDisplayName),
+    });
+    if (jobKey) seenBatchJobs.add(jobKey);
+    else if (item.salesSeqNo > 0) seenBatchSeqNoJob.add(item.salesSeqNo);
   }
 
-  const changedCount = imported + updated;
+  const counters = {
+    imported: 0,
+    updated: 0,
+    failed: 0,
+    errors: [] as string[],
+  };
+
+  // Report initial skipped progress immediately
+  let completedCount = skipped;
+  const totalChunks = Math.max(1, Math.ceil(pendingOps.length / IMPORT_BATCH_CHUNK_SIZE));
+  options?.onProgress?.(
+    completedCount,
+    total,
+    pendingOps.length > 0
+      ? `เตรียมบันทึก ${pendingOps.length.toLocaleString('th-TH')} รายการ (แบ่ง ${totalChunks} ชุด)`
+      : 'ตรวจสอบข้อมูลเสร็จสิ้น'
+  );
+
+  for (let offset = 0; offset < pendingOps.length; offset += IMPORT_BATCH_CHUNK_SIZE) {
+    const chunkIndex = Math.floor(offset / IMPORT_BATCH_CHUNK_SIZE) + 1;
+    const chunk = pendingOps.slice(offset, offset + IMPORT_BATCH_CHUNK_SIZE);
+
+    options?.onProgress?.(
+      completedCount,
+      total,
+      `กำลังบันทึกชุดที่ ${chunkIndex} / ${totalChunks} (${chunk.length} รายการ)...`
+    );
+
+    await commitOpsWithResilientFallback(chunk, counters);
+    completedCount += chunk.length;
+
+    options?.onProgress?.(
+      Math.min(completedCount, total),
+      total,
+      `บันทึกแล้ว ${Math.min(completedCount, total).toLocaleString('th-TH')} / ${total.toLocaleString('th-TH')} รายการ`
+    );
+
+    // Yield to browser paint loop between chunks so UI stays responsive on 500–5,000+ rows
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  if (counters.failed > counters.errors.length) {
+    counters.errors.push(
+      `และมีอีก ${(counters.failed - counters.errors.length).toLocaleString('th-TH')} รายการที่ไม่สำเร็จ`
+    );
+  }
+
+  const changedCount = counters.imported + counters.updated;
   if (changedCount > 0) {
     try {
       await logAuditEvent({
         action: 'นำเข้าข้อมูลเคสออฟฟิศแบบชุด',
         targetType: 'office_case',
         targetId: `batch-${Date.now()}`,
-        targetLabel: `นำเข้าใหม่ ${imported} · อัปเดต ${updated} (ข้าม ${skipped})`.slice(0, 175),
+        targetLabel: `นำเข้าใหม่ ${counters.imported} · อัปเดต ${counters.updated} (ข้าม ${skipped})`.slice(0, 175),
         actorId: actor.uid,
         actorName: actor.displayName,
         details: `นำเข้าข้อมูลทะเบียน CTEC Personalized Implant${options?.sourceLabel ? ` จาก ${options.sourceLabel}` : ''}`.slice(0, 390),
@@ -580,8 +770,8 @@ export async function importOfficeCasesBatch(
     try {
       await publishNotification({
         type: 'daily_summary',
-        title: `นำเข้าทะเบียนเคสออฟฟิศสำเร็จ ${changedCount} รายการ`,
-        message: `${actor.displayName} นำเข้าใหม่ ${imported} รายการ${updated > 0 ? ` และอัปเดต ${updated} รายการ` : ''}${options?.sourceLabel ? ` (${options.sourceLabel})` : ''}`.slice(0, 580),
+        title: `นำเข้าทะเบียนเคสออฟฟิศสำเร็จ ${changedCount.toLocaleString('th-TH')} รายการ`,
+        message: `${actor.displayName} นำเข้าใหม่ ${counters.imported.toLocaleString('th-TH')} รายการ${counters.updated > 0 ? ` และอัปเดต ${counters.updated.toLocaleString('th-TH')} รายการ` : ''}${options?.sourceLabel ? ` (${options.sourceLabel})` : ''}`.slice(0, 580),
         amount: items.reduce((sum, i) => sum + (i.price || 0), 0),
         caseCount: changedCount,
         createdBy: actor.uid,
@@ -592,5 +782,11 @@ export async function importOfficeCasesBatch(
     }
   }
 
-  return { imported, updated, skipped, failed, errors };
+  return {
+    imported: counters.imported,
+    updated: counters.updated,
+    skipped,
+    failed: counters.failed,
+    errors: counters.errors,
+  };
 }
