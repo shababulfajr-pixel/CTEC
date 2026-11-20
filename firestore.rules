@@ -1,0 +1,617 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 3: Hardened Global Helpers
+    // -------------------------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'shababulfajr@gmail.com';
+    }
+
+    function hasUserDoc() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function currentUserRole() {
+      return hasUserDoc()
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : 'none';
+    }
+
+    function currentUserActive() {
+      return isBootstrappedAdmin() || (
+        hasUserDoc() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true
+      );
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        hasUserDoc() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+      );
+    }
+
+    function isManagerOrAbove() {
+      return isVerifiedUser() && currentUserActive() && (
+        isBootstrappedAdmin() ||
+        currentUserRole() in ['admin', 'executive', 'manager']
+      );
+    }
+
+    function isOfficeStaffOrAbove() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        hasUserDoc() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'executive', 'manager', 'office_admin']
+      );
+    }
+
+    function canWriteOfficeCases() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        hasUserDoc() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'manager', 'office_admin']
+      );
+    }
+
+    function isValidRole(role) {
+      return role in ['admin', 'executive', 'manager', 'office_admin', 'sales'];
+    }
+
+    function isValidRegion(region) {
+      return region in [
+        'กรุงเทพและปริมณฑล',
+        'ภาคกลาง',
+        'ภาคเหนือ',
+        'ภาคตะวันออกเฉียงเหนือ',
+        'ภาคตะวันออก',
+        'ภาคใต้'
+      ];
+    }
+
+    function isValidHospitalType(t) {
+      return t in [
+        'โรงพยาบาลรัฐ',
+        'โรงพยาบาลเอกชน',
+        'โรงเรียนแพทย์',
+        'คลินิกเฉพาะทาง'
+      ];
+    }
+
+    function isValidHospitalStatus(s) {
+      return s in ['active', 'prospect', 'high_priority', 'inactive'];
+    }
+
+    function isValidProductCategory(cat) {
+      return cat in [
+        'Cardiovascular & Neuro Implants',
+        'Orthopedic Joint Systems',
+        'Surgical Robotics & Endoscopy',
+        'CTEC Spine & Trauma Solutions',
+        'Interventional Cardiology Stents',
+        'เครื่องมือผ่าตัดและเวชภัณฑ์',
+        'อุปกรณ์ห้อง ICU',
+        'ระบบตรวจวินิจฉัยและภาพถ่าย',
+        'วัสดุสิ้นเปลืองทางการแพทย์',
+        'สัญญาบริการและบำรุงรักษา'
+      ];
+    }
+
+    function isValidDealStage(stage) {
+      return stage in ['lead', 'qualified', 'proposal', 'negotiation', 'won', 'lost'];
+    }
+
+    function isValidNotificationType(t) {
+      return t in ['daily_summary', 'deal_won', 'high_density_alert', 'stage_update'];
+    }
+
+    function isValidAuditTargetType(t) {
+      return t in ['user', 'hospital', 'deal', 'report', 'notification', 'office_case'];
+    }
+
+    function isValidOfficeWorkflowStatus(s) {
+      return s in ['in_progress', 'sterilizing', 'delivered'];
+    }
+
+    // -------------------------------------------------------------------------
+    // Pillar 2: Validation Blueprints (Synced verbatim with firebase-blueprint.json)
+    // -------------------------------------------------------------------------
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+        'uid', 'orgId', 'displayName', 'role', 'department', 'territory', 'active', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid', 'orgId', 'displayName', 'role', 'department', 'territory', 'active', 'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.uid) &&
+      data.orgId == 'ctec-medical' &&
+      data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+      isValidRole(data.role) &&
+      data.department is string && data.department.size() <= 80 &&
+      data.territory is string && data.territory.size() <= 80 &&
+      data.active is bool &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateInfo(data) {
+      return data.keys().hasAll(['uid', 'email', 'phone', 'photoURL', 'updatedAt']) &&
+      data.keys().hasOnly(['uid', 'email', 'phone', 'photoURL', 'updatedAt']) &&
+      isValidId(data.uid) &&
+      data.email is string && data.email.size() <= 200 &&
+      data.phone is string && data.phone.size() <= 40 &&
+      data.photoURL is string && data.photoURL.size() <= 500 &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidHospital(data) {
+      return data.keys().hasAll([
+        'orgId', 'name', 'placeId', 'address', 'province', 'region', 'lat', 'lng',
+        'hospitalType', 'caseCount', 'totalRevenue', 'activeDealsCount', 'status',
+        'contactName', 'contactRole', 'contactPhone', 'ownerId', 'ownerName',
+        'notes', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'orgId', 'name', 'placeId', 'address', 'province', 'region', 'lat', 'lng',
+        'hospitalType', 'caseCount', 'totalRevenue', 'activeDealsCount', 'status',
+        'contactName', 'contactRole', 'contactPhone', 'ownerId', 'ownerName',
+        'notes', 'createdAt', 'updatedAt'
+      ]) &&
+      data.orgId == 'ctec-medical' &&
+      data.name is string && data.name.size() >= 2 && data.name.size() <= 180 &&
+      data.placeId is string && data.placeId.size() <= 200 &&
+      data.address is string && data.address.size() <= 300 &&
+      data.province is string && data.province.size() <= 80 &&
+      isValidRegion(data.region) &&
+      data.lat is number && data.lat >= -90 && data.lat <= 90 &&
+      data.lng is number && data.lng >= -180 && data.lng <= 180 &&
+      isValidHospitalType(data.hospitalType) &&
+      data.caseCount is number && data.caseCount >= 0 && data.caseCount <= 100000 &&
+      data.totalRevenue is number && data.totalRevenue >= 0 && data.totalRevenue <= 10000000000 &&
+      data.activeDealsCount is number && data.activeDealsCount >= 0 && data.activeDealsCount <= 10000 &&
+      isValidHospitalStatus(data.status) &&
+      data.contactName is string && data.contactName.size() <= 120 &&
+      data.contactRole is string && data.contactRole.size() <= 100 &&
+      data.contactPhone is string && data.contactPhone.size() <= 40 &&
+      isValidId(data.ownerId) &&
+      data.ownerName is string && data.ownerName.size() <= 120 &&
+      data.notes is string && data.notes.size() <= 1000 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidDeal(data) {
+      return data.keys().hasAll([
+        'orgId', 'title', 'hospitalId', 'hospitalName', 'productCategory',
+        'amount', 'caseVolume', 'stage', 'probability', 'expectedCloseDate',
+        'dateKey', 'notes', 'ownerId', 'ownerName', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'orgId', 'title', 'hospitalId', 'hospitalName', 'productCategory',
+        'amount', 'caseVolume', 'stage', 'probability', 'expectedCloseDate',
+        'dateKey', 'notes', 'ownerId', 'ownerName', 'createdAt', 'updatedAt'
+      ]) &&
+      data.orgId == 'ctec-medical' &&
+      data.title is string && data.title.size() >= 2 && data.title.size() <= 180 &&
+      isValidId(data.hospitalId) &&
+      data.hospitalName is string && data.hospitalName.size() >= 1 && data.hospitalName.size() <= 180 &&
+      isValidProductCategory(data.productCategory) &&
+      data.amount is number && data.amount >= 0 && data.amount <= 1000000000 &&
+      data.caseVolume is number && data.caseVolume >= 0 && data.caseVolume <= 100000 &&
+      isValidDealStage(data.stage) &&
+      data.probability is number && data.probability >= 0 && data.probability <= 100 &&
+      data.expectedCloseDate is string && data.expectedCloseDate.size() <= 32 &&
+      data.dateKey is string && data.dateKey.size() <= 16 &&
+      data.notes is string && data.notes.size() <= 1000 &&
+      isValidId(data.ownerId) &&
+      data.ownerName is string && data.ownerName.size() <= 120 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll([
+        'orgId', 'type', 'title', 'message', 'amount', 'caseCount',
+        'dateKey', 'createdBy', 'createdByName', 'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'orgId', 'type', 'title', 'message', 'amount', 'caseCount',
+        'dateKey', 'createdBy', 'createdByName', 'createdAt'
+      ]) &&
+      data.orgId == 'ctec-medical' &&
+      isValidNotificationType(data.type) &&
+      data.title is string && data.title.size() >= 2 && data.title.size() <= 180 &&
+      data.message is string && data.message.size() >= 2 && data.message.size() <= 600 &&
+      data.amount is number && data.amount >= 0 && data.amount <= 10000000000 &&
+      data.caseCount is number && data.caseCount >= 0 && data.caseCount <= 1000000 &&
+      data.dateKey is string && data.dateKey.size() <= 16 &&
+      isValidId(data.createdBy) &&
+      data.createdByName is string && data.createdByName.size() <= 120 &&
+      data.createdAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll([
+        'orgId', 'action', 'targetType', 'targetId', 'targetLabel',
+        'actorId', 'actorName', 'details', 'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'orgId', 'action', 'targetType', 'targetId', 'targetLabel',
+        'actorId', 'actorName', 'details', 'createdAt'
+      ]) &&
+      data.orgId == 'ctec-medical' &&
+      data.action is string && data.action.size() >= 1 && data.action.size() <= 80 &&
+      isValidAuditTargetType(data.targetType) &&
+      data.targetId is string && data.targetId.size() <= 128 &&
+      data.targetLabel is string && data.targetLabel.size() <= 180 &&
+      isValidId(data.actorId) &&
+      data.actorName is string && data.actorName.size() <= 120 &&
+      data.details is string && data.details.size() <= 400 &&
+      data.createdAt is timestamp;
+    }
+
+    function isValidOfficeCasePartA(data) {
+      return data.orgId == 'ctec-medical' &&
+      data.salesSeqNo is number && data.salesSeqNo >= 0 && data.salesSeqNo <= 999999 &&
+      data.jobNumber is string && data.jobNumber.size() <= 40 &&
+      data.monthlySeq is number && data.monthlySeq >= 0 && data.monthlySeq <= 9999 &&
+      data.icrNumber is string && data.icrNumber.size() <= 40 &&
+      data.hospitalCategory is number && data.hospitalCategory in [1, 2, 3] &&
+      data.productionPlanNo is string && data.productionPlanNo.size() <= 60 &&
+      data.barcode is string && data.barcode.size() <= 64 &&
+      isValidOfficeWorkflowStatus(data.workflowStatus) &&
+      data.paymentChannels is list && data.paymentChannels.size() <= 9 &&
+      (
+        data.paymentChannels.size() == 0 ||
+        (
+          data.paymentChannels[0] is string &&
+          data.paymentChannels.hasOnly([
+            'patient_direct', 'deposit_50_first', 'balance_50_before_ship',
+            'via_hospital', 'free_case', 'doctor_pay',
+            'sell_via_ctec', 'ctec', 'wimanrat'
+          ])
+        )
+      ) &&
+      data.price is number && data.price >= 0 && data.price <= 100000000 &&
+      data.paymentDetails is string && data.paymentDetails.size() <= 200 &&
+      data.paymentConditionNote is string && data.paymentConditionNote.size() <= 200;
+    }
+
+    function isValidOfficeCasePartB(data) {
+      return data.patientPrefix is string && data.patientPrefix.size() <= 30 &&
+      data.patientFirstName is string && data.patientFirstName.size() <= 120 &&
+      data.patientLastName is string && data.patientLastName.size() <= 120 &&
+      data.patientHN is string && data.patientHN.size() <= 40 &&
+      data.patientAge is string && data.patientAge.size() <= 20 &&
+      data.patientPhone is string && data.patientPhone.size() <= 40 &&
+      data.hospitalName is string && data.hospitalName.size() <= 180 &&
+      data.doctorName is string && data.doctorName.size() <= 150 &&
+      data.doctorPhone is string && data.doctorPhone.size() <= 40 &&
+      data.productCode is string && data.productCode.size() <= 60 &&
+      data.sidePosition is string && data.sidePosition.size() <= 30 &&
+      data.anatomicalArea is string && data.anatomicalArea.size() <= 80 &&
+      data.surgeryType is string && data.surgeryType.size() <= 80 &&
+      data.materialType is string && data.materialType.size() <= 60 &&
+      data.rpModelQty is number && data.rpModelQty >= 0 && data.rpModelQty <= 100 &&
+      data.implantQty is number && data.implantQty >= 0 && data.implantQty <= 100 &&
+      data.temporalSpec is string && data.temporalSpec.size() <= 160 &&
+      data.productionSpec is string && data.productionSpec.size() <= 400 &&
+      data.receivedDate is string && data.receivedDate.size() <= 32 &&
+      data.surgeryDate is string && data.surgeryDate.size() <= 32 &&
+      data.caseReceiver is string && data.caseReceiver.size() <= 80;
+    }
+
+    function isValidOfficeCasePartC(data) {
+      return data.sterilizeOutDate is string && data.sterilizeOutDate.size() <= 32 &&
+      data.sterilizeReturnDate is string && data.sterilizeReturnDate.size() <= 32 &&
+      data.radiationMinKgy is string && data.radiationMinKgy.size() <= 20 &&
+      data.radiationMaxKgy is string && data.radiationMaxKgy.size() <= 20 &&
+      data.doseUniformity is string && data.doseUniformity.size() <= 20 &&
+      data.qcReceiveDate is string && data.qcReceiveDate.size() <= 32 &&
+      data.certificateNo is string && data.certificateNo.size() <= 60 &&
+      data.deliveryDate is string && data.deliveryDate.size() <= 32 &&
+      data.deliveryChannel is string && data.deliveryChannel.size() <= 60 &&
+      data.deliveredBy is string && data.deliveredBy.size() <= 80 &&
+      data.emsTrackingNo is string && data.emsTrackingNo.size() <= 80 &&
+      data.shippingInfo is string && data.shippingInfo.size() <= 600 &&
+      data.receiptAddress is string && data.receiptAddress.size() <= 600 &&
+      data.packageInfo is string && data.packageInfo.size() <= 160 &&
+      data.remarks is string && data.remarks.size() <= 600 &&
+      data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
+      data.createdByName is string && data.createdByName.size() <= 120 &&
+      data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128 &&
+      data.updatedByName is string && data.updatedByName.size() <= 120 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidOfficeCase(data) {
+      let keys = data.keys();
+      return keys.size() == 55 &&
+      keys.hasOnly([
+        'orgId', 'salesSeqNo', 'jobNumber', 'monthlySeq', 'icrNumber',
+        'hospitalCategory', 'productionPlanNo', 'barcode', 'workflowStatus',
+        'paymentChannels', 'price', 'paymentDetails', 'paymentConditionNote',
+        'patientPrefix', 'patientFirstName', 'patientLastName', 'patientHN',
+        'patientAge', 'patientPhone', 'hospitalName', 'doctorName', 'doctorPhone',
+        'productCode', 'sidePosition', 'anatomicalArea', 'surgeryType', 'materialType',
+        'rpModelQty', 'implantQty', 'temporalSpec', 'productionSpec',
+        'receivedDate', 'surgeryDate', 'caseReceiver',
+        'sterilizeOutDate', 'sterilizeReturnDate', 'radiationMinKgy',
+        'radiationMaxKgy', 'doseUniformity', 'qcReceiveDate', 'certificateNo',
+        'deliveryDate', 'deliveryChannel', 'deliveredBy', 'emsTrackingNo',
+        'shippingInfo', 'receiptAddress', 'packageInfo', 'remarks',
+        'createdBy', 'createdByName', 'updatedBy', 'updatedByName',
+        'createdAt', 'updatedAt'
+      ]) &&
+      isValidOfficeCasePartA(data) &&
+      isValidOfficeCasePartB(data) &&
+      isValidOfficeCasePartC(data);
+    }
+
+    function canUpdateOfficeCase(d, e) {
+      let diffKeys = d.diff(e).affectedKeys();
+      return !diffKeys.hasAny(['orgId', 'createdBy', 'createdByName', 'createdAt']) &&
+        d.updatedBy == request.auth.uid &&
+        d.updatedAt == request.time &&
+        (
+          // Tier 1 (Admin override) & Tier 2 (Office Admin / Manager on active or sterilizing cases)
+          isAdmin() ||
+          (canWriteOfficeCases() && e.workflowStatus != 'delivered') ||
+          // Tier 3: Office Admin updating billing/QA cert/EMS/remarks on an already-delivered case without changing patient/implant core specs
+          (canWriteOfficeCases() && e.workflowStatus == 'delivered' &&
+            d.workflowStatus == 'delivered' &&
+            diffKeys.hasOnly([
+              'paymentChannels', 'price', 'paymentDetails', 'paymentConditionNote',
+              'sterilizeReturnDate', 'radiationMinKgy', 'radiationMaxKgy',
+              'doseUniformity', 'qcReceiveDate', 'certificateNo',
+              'deliveryDate', 'deliveryChannel', 'deliveredBy', 'emsTrackingNo',
+              'shippingInfo', 'receiptAddress', 'packageInfo', 'remarks',
+              'updatedBy', 'updatedByName', 'updatedAt'
+            ]))
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection Rules
+    // -------------------------------------------------------------------------
+
+    // 1. Users (Public Team Metadata + RBAC)
+    match /users/{userId} {
+      allow get: if isVerifiedUser() && isValidId(userId) && (
+        userId == request.auth.uid || (resource != null && existing().orgId == 'ctec-medical')
+      );
+      allow list: if isVerifiedUser() && resource.data.orgId == 'ctec-medical';
+
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == userId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (
+          (userId == request.auth.uid && isBootstrappedAdmin() && incoming().role == 'admin' && incoming().active == true) ||
+          (userId == request.auth.uid && incoming().role == 'sales' && incoming().active == true)
+        );
+
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().orgId == existing().orgId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          // Tier 1: Admin updating role, active status, department, territory
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'role', 'department', 'territory', 'active', 'updatedAt'])) ||
+          // Tier 2: Owner updating own non-RBAC profile fields only
+          (userId == request.auth.uid && incoming().role == existing().role && incoming().active == existing().active &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'department', 'territory', 'updatedAt']))
+        );
+
+      allow delete: if false;
+
+      // Isolated PII subcollection (Pillar 6)
+      match /private/{docId} {
+        allow get: if isVerifiedUser() && isValidId(userId) && docId == 'info' && (
+          userId == request.auth.uid || isAdmin()
+        );
+        allow list: if false;
+        allow create: if isVerifiedUser() &&
+          isValidId(userId) &&
+          docId == 'info' &&
+          isValidUserPrivateInfo(incoming()) &&
+          incoming().uid == userId &&
+          incoming().updatedAt == request.time &&
+          userId == request.auth.uid;
+        allow update: if isVerifiedUser() &&
+          isValidId(userId) &&
+          docId == 'info' &&
+          isValidUserPrivateInfo(incoming()) &&
+          incoming().uid == existing().uid &&
+          incoming().updatedAt == request.time &&
+          (userId == request.auth.uid || isAdmin()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['email', 'phone', 'photoURL', 'updatedAt']);
+        allow delete: if false;
+      }
+    }
+
+    // 2. Hospitals (Shared CRM Hospital Accounts & Density Map)
+    match /hospitals/{hospitalId} {
+      allow get: if isVerifiedUser() && isValidId(hospitalId) && existing().orgId == 'ctec-medical';
+      allow list: if isVerifiedUser() && resource.data.orgId == 'ctec-medical';
+
+      allow create: if isVerifiedUser() &&
+        isValidId(hospitalId) &&
+        isValidHospital(incoming()) &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        currentUserActive();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(hospitalId) &&
+        isValidHospital(incoming()) &&
+        incoming().orgId == existing().orgId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          // Tier 1: Admin or Manager can update all mutable hospital fields including reassignment
+          (isManagerOrAbove() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'placeId', 'address', 'province', 'region', 'lat', 'lng',
+            'hospitalType', 'caseCount', 'totalRevenue', 'activeDealsCount', 'status',
+            'contactName', 'contactRole', 'contactPhone', 'ownerId', 'ownerName', 'notes', 'updatedAt'
+          ])) ||
+          // Tier 2: Owner updating own hospital details & case metrics
+          (existing().ownerId == request.auth.uid && incoming().ownerId == existing().ownerId && currentUserActive() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'address', 'province', 'region', 'lat', 'lng',
+              'hospitalType', 'caseCount', 'totalRevenue', 'activeDealsCount', 'status',
+              'contactName', 'contactRole', 'contactPhone', 'notes', 'updatedAt'
+            ])) ||
+          // Tier 3: Active team member syncing aggregated metrics when closing/logging a deal on a shared hospital
+          (currentUserActive() && incoming().ownerId == existing().ownerId &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'caseCount', 'totalRevenue', 'activeDealsCount', 'status', 'updatedAt'
+            ]))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(hospitalId) && isAdmin();
+    }
+
+    // 3. Deals (Sales Pipeline — strict owner isolation for sales reps, org-wide for managers/executives/admins)
+    match /deals/{dealId} {
+      allow get: if isVerifiedUser() && isValidId(dealId) && (
+        existing().ownerId == request.auth.uid || isManagerOrAbove()
+      );
+      allow list: if isVerifiedUser() && (
+        resource.data.ownerId == request.auth.uid ||
+        (resource.data.orgId == 'ctec-medical' && isManagerOrAbove())
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(dealId) &&
+        isValidDeal(incoming()) &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        currentUserActive() &&
+        exists(/databases/$(database)/documents/hospitals/$(incoming().hospitalId));
+
+      allow update: if isVerifiedUser() &&
+        isValidId(dealId) &&
+        isValidDeal(incoming()) &&
+        incoming().orgId == existing().orgId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().hospitalId == existing().hospitalId &&
+        incoming().updatedAt == request.time &&
+        (
+          // Tier 1: Admin override (including terminal state correction & reassignment)
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'hospitalName', 'productCategory', 'amount', 'caseVolume',
+            'stage', 'probability', 'expectedCloseDate', 'dateKey', 'notes',
+            'ownerId', 'ownerName', 'updatedAt'
+          ])) ||
+          // Tier 2: Owner or Manager updating active (non-terminal) deals
+          (existing().stage != 'won' && existing().stage != 'lost' &&
+            incoming().ownerId == existing().ownerId &&
+            (existing().ownerId == request.auth.uid || isManagerOrAbove()) &&
+            currentUserActive() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'productCategory', 'amount', 'caseVolume',
+              'stage', 'probability', 'expectedCloseDate', 'notes', 'updatedAt'
+            ]))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(dealId) && (
+        isAdmin() || (existing().ownerId == request.auth.uid && existing().stage != 'won')
+      );
+    }
+
+    // 4. Notifications (Real-time Daily Sales Summaries & Alerts)
+    match /notifications/{notificationId} {
+      allow get: if isVerifiedUser() && isValidId(notificationId) && existing().orgId == 'ctec-medical';
+      allow list: if isVerifiedUser() && resource.data.orgId == 'ctec-medical';
+
+      allow create: if isVerifiedUser() &&
+        isValidId(notificationId) &&
+        isValidNotification(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        currentUserActive();
+
+      allow update: if false;
+      allow delete: if isVerifiedUser() && isValidId(notificationId) && isAdmin();
+    }
+
+    // 5. Audit Logs (Immutable Security & Operations Log — Managers/Executives/Admins only)
+    match /auditLogs/{logId} {
+      allow get: if isVerifiedUser() && isValidId(logId) && isManagerOrAbove();
+      allow list: if isVerifiedUser() && resource.data.orgId == 'ctec-medical' && isManagerOrAbove();
+
+      allow create: if isVerifiedUser() &&
+        isValidId(logId) &&
+        isValidAuditLog(incoming()) &&
+        incoming().actorId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        currentUserActive();
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // 6. Office Cases (CTEC Customized Personalized Implant Intake, Sterilization & Delivery Ledger)
+    // Contains patient PII (name, HN, phone, receipt address): strictly restricted to authorized office/admin/management roles.
+    match /officeCases/{caseId} {
+      allow get: if isVerifiedUser() && isValidId(caseId) && existing().orgId == 'ctec-medical' && isOfficeStaffOrAbove();
+      allow list: if isVerifiedUser() && resource.data.orgId == 'ctec-medical' && isOfficeStaffOrAbove();
+
+      allow create: if isVerifiedUser() &&
+        isValidId(caseId) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().updatedBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isValidOfficeCase(incoming()) &&
+        canWriteOfficeCases();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(caseId) &&
+        isValidOfficeCase(request.resource.data) &&
+        canUpdateOfficeCase(request.resource.data, resource.data);
+
+      allow delete: if isVerifiedUser() && isValidId(caseId) && isAdmin();
+    }
+  }
+}

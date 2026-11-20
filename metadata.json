@@ -1,0 +1,6 @@
+{
+  "name": "CTEC MedSales CRM",
+  "description": "ระบบ CRM บริหารข้อมูลลูกค้าโรงพยาบาล ติดตามสถานะการขาย แผนที่ความหนาแน่นเคส แจ้งเตือนสรุปยอดขายเรียลไทม์ รายงาน PDF/Excel และจัดการสิทธิ์ผู้ใช้งาน",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

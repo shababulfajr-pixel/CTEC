@@ -1,0 +1,561 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public team profile and RBAC role metadata for a CRM user (PII isolated in private subcollection).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "orgId": {
+          "type": "string",
+          "enum": ["ctec-medical"]
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "executive", "manager", "office_admin", "sales"]
+        },
+        "department": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "territory": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "orgId", "displayName", "role", "department", "territory", "active", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated Personally Identifiable Information (email, phone, photoURL) readable only by the owner or an admin.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "phone", "photoURL", "updatedAt"]
+    },
+    "Hospital": {
+      "title": "Hospital",
+      "description": "Hospital account managed in the CRM with location coordinates, case density count, and sales status.",
+      "type": "object",
+      "properties": {
+        "orgId": {
+          "type": "string",
+          "enum": ["ctec-medical"]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 180
+        },
+        "placeId": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "address": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "province": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "region": {
+          "type": "string",
+          "enum": ["กรุงเทพและปริมณฑล", "ภาคกลาง", "ภาคเหนือ", "ภาคตะวันออกเฉียงเหนือ", "ภาคตะวันออก", "ภาคใต้"]
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        },
+        "hospitalType": {
+          "type": "string",
+          "enum": ["โรงพยาบาลรัฐ", "โรงพยาบาลเอกชน", "โรงเรียนแพทย์", "คลินิกเฉพาะทาง"]
+        },
+        "caseCount": {
+          "type": "number"
+        },
+        "totalRevenue": {
+          "type": "number"
+        },
+        "activeDealsCount": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "prospect", "high_priority", "inactive"]
+        },
+        "contactName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "contactRole": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "contactPhone": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "orgId",
+        "name",
+        "placeId",
+        "address",
+        "province",
+        "region",
+        "lat",
+        "lng",
+        "hospitalType",
+        "caseCount",
+        "totalRevenue",
+        "activeDealsCount",
+        "status",
+        "contactName",
+        "contactRole",
+        "contactPhone",
+        "ownerId",
+        "ownerName",
+        "notes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Deal": {
+      "title": "Deal",
+      "description": "Sales pipeline deal associated with a hospital customer.",
+      "type": "object",
+      "properties": {
+        "orgId": {
+          "type": "string",
+          "enum": ["ctec-medical"]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 180
+        },
+        "hospitalId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "hospitalName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 180
+        },
+        "productCategory": {
+          "type": "string",
+          "enum": [
+            "Cardiovascular & Neuro Implants",
+            "Orthopedic Joint Systems",
+            "Surgical Robotics & Endoscopy",
+            "CTEC Spine & Trauma Solutions",
+            "Interventional Cardiology Stents",
+            "เครื่องมือผ่าตัดและเวชภัณฑ์",
+            "อุปกรณ์ห้อง ICU",
+            "ระบบตรวจวินิจฉัยและภาพถ่าย",
+            "วัสดุสิ้นเปลืองทางการแพทย์",
+            "สัญญาบริการและบำรุงรักษา"
+          ]
+        },
+        "amount": {
+          "type": "number"
+        },
+        "caseVolume": {
+          "type": "number"
+        },
+        "stage": {
+          "type": "string",
+          "enum": ["lead", "qualified", "proposal", "negotiation", "won", "lost"]
+        },
+        "probability": {
+          "type": "number"
+        },
+        "expectedCloseDate": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "dateKey": {
+          "type": "string",
+          "maxLength": 16
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "orgId",
+        "title",
+        "hospitalId",
+        "hospitalName",
+        "productCategory",
+        "amount",
+        "caseVolume",
+        "stage",
+        "probability",
+        "expectedCloseDate",
+        "dateKey",
+        "notes",
+        "ownerId",
+        "ownerName",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "Real-time sales update and daily summary notification.",
+      "type": "object",
+      "properties": {
+        "orgId": {
+          "type": "string",
+          "enum": ["ctec-medical"]
+        },
+        "type": {
+          "type": "string",
+          "enum": ["daily_summary", "deal_won", "high_density_alert", "stage_update"]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 180
+        },
+        "message": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 600
+        },
+        "amount": {
+          "type": "number"
+        },
+        "caseCount": {
+          "type": "number"
+        },
+        "dateKey": {
+          "type": "string",
+          "maxLength": 16
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "orgId",
+        "type",
+        "title",
+        "message",
+        "amount",
+        "caseCount",
+        "dateKey",
+        "createdBy",
+        "createdByName",
+        "createdAt"
+      ]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable security and operational audit trail for RBAC and CRM actions.",
+      "type": "object",
+      "properties": {
+        "orgId": {
+          "type": "string",
+          "enum": ["ctec-medical"]
+        },
+        "action": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "targetType": {
+          "type": "string",
+          "enum": ["user", "hospital", "deal", "report", "notification", "office_case"]
+        },
+        "targetId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "targetLabel": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "actorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "actorName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "details": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "orgId",
+        "action",
+        "targetType",
+        "targetId",
+        "targetLabel",
+        "actorId",
+        "actorName",
+        "details",
+        "createdAt"
+      ]
+    },
+    "OfficeCase": {
+      "title": "OfficeCase",
+      "description": "CTEC Customized Personalized Implant office case production, sterilization, billing, and shipping ledger record (contains patient PII; restricted to office_admin, manager, executive, and admin).",
+      "type": "object",
+      "properties": {
+        "orgId": { "type": "string", "enum": ["ctec-medical"] },
+        "salesSeqNo": { "type": "number" },
+        "jobNumber": { "type": "string", "maxLength": 40 },
+        "monthlySeq": { "type": "number" },
+        "icrNumber": { "type": "string", "maxLength": 40 },
+        "hospitalCategory": { "type": "number" },
+        "productionPlanNo": { "type": "string", "maxLength": 60 },
+        "barcode": { "type": "string", "maxLength": 64 },
+        "workflowStatus": { "type": "string", "enum": ["in_progress", "sterilizing", "delivered"] },
+        "paymentChannels": { "type": "array" },
+        "price": { "type": "number" },
+        "paymentDetails": { "type": "string", "maxLength": 200 },
+        "paymentConditionNote": { "type": "string", "maxLength": 200 },
+        "patientPrefix": { "type": "string", "maxLength": 30 },
+        "patientFirstName": { "type": "string", "maxLength": 120 },
+        "patientLastName": { "type": "string", "maxLength": 120 },
+        "patientHN": { "type": "string", "maxLength": 40 },
+        "patientAge": { "type": "string", "maxLength": 20 },
+        "patientPhone": { "type": "string", "maxLength": 40 },
+        "hospitalName": { "type": "string", "maxLength": 180 },
+        "doctorName": { "type": "string", "maxLength": 150 },
+        "doctorPhone": { "type": "string", "maxLength": 40 },
+        "productCode": { "type": "string", "maxLength": 60 },
+        "sidePosition": { "type": "string", "maxLength": 30 },
+        "anatomicalArea": { "type": "string", "maxLength": 80 },
+        "surgeryType": { "type": "string", "maxLength": 80 },
+        "materialType": { "type": "string", "maxLength": 60 },
+        "rpModelQty": { "type": "number" },
+        "implantQty": { "type": "number" },
+        "temporalSpec": { "type": "string", "maxLength": 160 },
+        "productionSpec": { "type": "string", "maxLength": 400 },
+        "receivedDate": { "type": "string", "maxLength": 32 },
+        "surgeryDate": { "type": "string", "maxLength": 32 },
+        "caseReceiver": { "type": "string", "maxLength": 80 },
+        "sterilizeOutDate": { "type": "string", "maxLength": 32 },
+        "sterilizeReturnDate": { "type": "string", "maxLength": 32 },
+        "radiationMinKgy": { "type": "string", "maxLength": 20 },
+        "radiationMaxKgy": { "type": "string", "maxLength": 20 },
+        "doseUniformity": { "type": "string", "maxLength": 20 },
+        "qcReceiveDate": { "type": "string", "maxLength": 32 },
+        "certificateNo": { "type": "string", "maxLength": 60 },
+        "deliveryDate": { "type": "string", "maxLength": 32 },
+        "deliveryChannel": { "type": "string", "maxLength": 60 },
+        "deliveredBy": { "type": "string", "maxLength": 80 },
+        "emsTrackingNo": { "type": "string", "maxLength": 80 },
+        "shippingInfo": { "type": "string", "maxLength": 600 },
+        "receiptAddress": { "type": "string", "maxLength": 600 },
+        "packageInfo": { "type": "string", "maxLength": 160 },
+        "remarks": { "type": "string", "maxLength": 600 },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdByName": { "type": "string", "maxLength": 120 },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "updatedByName": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "orgId",
+        "salesSeqNo",
+        "jobNumber",
+        "monthlySeq",
+        "icrNumber",
+        "hospitalCategory",
+        "productionPlanNo",
+        "barcode",
+        "workflowStatus",
+        "paymentChannels",
+        "price",
+        "paymentDetails",
+        "paymentConditionNote",
+        "patientPrefix",
+        "patientFirstName",
+        "patientLastName",
+        "patientHN",
+        "patientAge",
+        "patientPhone",
+        "hospitalName",
+        "doctorName",
+        "doctorPhone",
+        "productCode",
+        "sidePosition",
+        "anatomicalArea",
+        "surgeryType",
+        "materialType",
+        "rpModelQty",
+        "implantQty",
+        "temporalSpec",
+        "productionSpec",
+        "receivedDate",
+        "surgeryDate",
+        "caseReceiver",
+        "sterilizeOutDate",
+        "sterilizeReturnDate",
+        "radiationMinKgy",
+        "radiationMaxKgy",
+        "doseUniformity",
+        "qcReceiveDate",
+        "certificateNo",
+        "deliveryDate",
+        "deliveryChannel",
+        "deliveredBy",
+        "emsTrackingNo",
+        "shippingInfo",
+        "receiptAddress",
+        "packageInfo",
+        "remarks",
+        "createdBy",
+        "createdByName",
+        "updatedBy",
+        "updatedByName",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Team member profiles and RBAC role assignments"
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Isolated PII document (info) per user"
+    },
+    "/hospitals/{hospitalId}": {
+      "schema": { "$ref": "#/entities/Hospital" },
+      "description": "Hospital customer directory with geographic coordinates and case density counts"
+    },
+    "/deals/{dealId}": {
+      "schema": { "$ref": "#/entities/Deal" },
+      "description": "Sales pipeline opportunities linked to hospitals"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "Real-time daily sales summaries and deal notifications"
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable RBAC and CRM security audit logs"
+    },
+    "/officeCases/{caseId}": {
+      "schema": { "$ref": "#/entities/OfficeCase" },
+      "description": "CTEC Customized Personalized Implant office intake, production, sterilization, and delivery tracking records"
+    }
+  }
+}

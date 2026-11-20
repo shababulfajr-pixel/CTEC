@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><link href="https://fonts.googleapis.com" rel="preconnect"/><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Plus+Jakarta+Sans:wght@600;700&amp;display=swap" rel="stylesheet"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = {
+  darkMode: "class",
+  theme: {
+    extend: {
+      "colors": {
+        "secondary": "#ffcf90",
+        "error": "#ffb4ab",
+        "on-tertiary-fixed-variant": "#5b4300",
+        "primary-fixed": "#ffdbd0",
+        "on-surface-variant": "#e3beb3",
+        "on-primary-container": "#561600",
+        "surface": "#0f131c",
+        "outline-variant": "#5b4138",
+        "on-background": "#dfe2ef",
+        "surface-container-highest": "#31353f",
+        "primary-fixed-dim": "#ffb59d",
+        "on-error-container": "#ffdad6",
+        "tertiary-container": "#b68e2a",
+        "surface-container": "#1c2029",
+        "surface-container-lowest": "#0a0e17",
+        "primary": "#ffb59d",
+        "surface-tint": "#ffb59d",
+        "outline": "#aa897f",
+        "secondary-fixed-dim": "#ffb952",
+        "tertiary-fixed": "#ffdf9d",
+        "on-secondary": "#452b00",
+        "on-primary-fixed-variant": "#832700",
+        "surface-dim": "#0f131c",
+        "secondary-container": "#ffaa00",
+        "error-container": "#93000a",
+        "surface-variant": "#31353f",
+        "surface-bright": "#353943",
+        "on-tertiary-fixed": "#251a00",
+        "inverse-on-surface": "#2c303a",
+        "on-secondary-fixed": "#291800",
+        "secondary-fixed": "#ffddb4",
+        "surface-container-high": "#262a34",
+        "tertiary-fixed-dim": "#eec058",
+        "on-primary": "#5d1900",
+        "inverse-surface": "#dfe2ef",
+        "on-error": "#690005",
+        "on-tertiary": "#3f2e00",
+        "on-secondary-fixed-variant": "#633f00",
+        "on-surface": "#dfe2ef",
+        "tertiary": "#eec058",
+        "inverse-primary": "#ab3500",
+        "on-primary-fixed": "#390c00",
+        "primary-container": "#ff5e1e",
+        "surface-container-low": "#181b25",
+        "background": "#0f131c",
+        "on-tertiary-container": "#3b2a00",
+        "on-secondary-container": "#694300"
+      },
+      "borderRadius": {
+        "DEFAULT": "0.25rem",
+        "lg": "0.5rem",
+        "xl": "0.75rem",
+        "full": "9999px"
+      },
+      "spacing": {
+        "margin": "2rem",
+        "margin-mobile": "1rem",
+        "space-sm": "0.5rem",
+        "margin-desktop": "2.5rem",
+        "gutter-sm": "1rem",
+        "gutter-lg": "2rem",
+        "space-md": "1rem",
+        "space-xs": "0.25rem",
+        "space-xl": "2.5rem",
+        "space-lg": "1.5rem",
+        "gutter": "1.5rem"
+      },
+      "fontFamily": {
+        "label-lg": ["Inter"],
+        "body-xl": ["Inter"],
+        "body-sm": ["Inter"],
+        "headline-lg": ["Plus Jakarta Sans"],
+        "headline-xl-mobile": ["Plus Jakarta Sans"],
+        "label-md": ["Inter"],
+        "headline-xl": ["Plus Jakarta Sans"],
+        "label-sm": ["Inter"],
+        "headline-md": ["Plus Jakarta Sans"],
+        "headline-sm": ["Plus Jakarta Sans"],
+        "display-lg": ["Plus Jakarta Sans"],
+        "display-lg-mobile": ["Plus Jakarta Sans"],
+        "stat-value": ["Plus Jakarta Sans"],
+        "body-lg": ["Inter"],
+        "body-md": ["Inter"]
+      },
+      "fontSize": {
+        "label-lg": ["14px", {"lineHeight": "20px", "letterSpacing": "0.01em", "fontWeight": "600"}],
+        "body-xl": ["18px", {"lineHeight": "28px", "fontWeight": "400"}],
+        "body-sm": ["12px", {"lineHeight": "16px", "fontWeight": "400"}],
+        "headline-lg": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+        "headline-xl-mobile": ["26px", {"lineHeight": "34px", "letterSpacing": "-0.015em", "fontWeight": "600"}],
+        "label-md": ["12px", {"lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500"}],
+        "headline-xl": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.015em", "fontWeight": "600"}],
+        "label-sm": ["10px", {"lineHeight": "14px", "letterSpacing": "0.06em", "fontWeight": "600"}],
+        "headline-md": ["20px", {"lineHeight": "28px", "letterSpacing": "-0.005em", "fontWeight": "600"}],
+        "headline-sm": ["16px", {"lineHeight": "24px", "fontWeight": "600"}],
+        "display-lg": ["48px", {"lineHeight": "56px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+        "display-lg-mobile": ["36px", {"lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+        "stat-value": ["34px", {"lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+        "body-lg": ["15px", {"lineHeight": "24px", "fontWeight": "400"}],
+        "body-md": ["13px", {"lineHeight": "20px", "fontWeight": "400"}]
+      }
+    }
+  }
+}</script></head><body class="bg-surface font-body-md text-on-surface antialiased selection:bg-primary-container selection:text-on-primary-container min-h-screen"><aside class="fixed left-0 top-0 h-full w-72 bg-surface-container-low/75 backdrop-blur-2xl z-50 flex flex-col justify-between py-6 px-4 shadow-[0_16px_48px_-8px_rgba(0,0,0,0.5)]"><div class="flex flex-col gap-6"><div class="flex items-center gap-3 px-3 py-2"><img alt="sale-representative-ctec Logo" class="h-8 w-auto object-contain" src="https://lh3.googleusercontent.com/aida/ALJJyrBFvWiopLkPqNgHUIh5oSat8jj2MZy0EZVC4SPLtIeZ5VZoUPSqS754DsgUX997QsmAw7UeJjDez0SxLJh0K8C4q59C1ZSvx-2yHT0upPpD5DaoGYhKvJZ-bUBsuYcQmgOH19yoonZ1R96mKVptly29opaboESIPb016WeUfXeG1Fqxp0wd36OgN6YKl7xYMth65BrRnkaejaOxoeVcXE5JvaJQu-8hSnkwNq6sz8s"/><div class="flex flex-col"><span class="font-headline-sm text-headline-sm text-on-surface tracking-tight leading-none">sale-rep-ctec</span><div class="flex items-center gap-1.5 mt-1"><span class="relative flex h-2 w-2"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-secondary-container opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-secondary-container"></span></span><span class="font-label-sm text-label-sm text-secondary uppercase tracking-widest">Firebase Live</span></div></div></div><div class="h-px w-full bg-gradient-to-r from-transparent via-outline-variant/40 to-transparent"></div><div class="px-3"><p class="font-label-sm text-label-sm text-outline tracking-wider uppercase mb-2">Enterprise Modules</p></div><nav class="flex flex-col gap-1.5" data-active-classes="bg-surface-container-high text-primary font-headline-sm shadow-[inset_0_1px_1px_rgba(255,255,255,0.15)] ring-1 ring-primary/30"><a class="flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-on-surface-variant font-label-lg text-label-lg hover:bg-surface-container hover:text-on-surface transition-all" data-path="overview-and-executive-dashboard" href="#"><span class="material-symbols-outlined text-[20px]">grid_view</span><span>Executive Overview</span></a><a class="flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-on-surface-variant font-label-lg text-label-lg hover:bg-surface-container hover:text-on-surface transition-all" data-path="regional-hospital-map-and-hotspots" href="#"><span class="material-symbols-outlined text-[20px]">share_location</span><span>Hospital Hotspots</span></a><a class="flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-on-surface-variant font-label-lg text-label-lg hover:bg-surface-container hover:text-on-surface transition-all" data-path="case-entry-and-sales-activity-log" href="#"><span class="material-symbols-outlined text-[20px]">edit_calendar</span><span>Case Entry &amp; Log</span></a><a class="flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-on-surface-variant font-label-lg text-label-lg hover:bg-surface-container hover:text-on-surface transition-all" data-path="role-and-access-management" href="#"><span class="material-symbols-outlined text-[20px]">verified_user</span><span>Access &amp; Roles</span></a></nav></div><div class="flex flex-col gap-4"><div class="p-3.5 rounded-xl bg-surface-container/60 backdrop-blur-xl shadow-[0_8px_32px_0_rgba(0,0,0,0.36)]"><div class="flex items-center justify-between mb-2"><span class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider">Active Instance</span><span class="font-label-sm text-label-sm text-primary font-semibold">v2.8-Cloud</span></div><div class="flex items-center gap-2"><span class="material-symbols-outlined text-secondary text-[16px]">cloud_done</span><span class="font-body-sm text-body-sm text-on-surface">Central Medical Spine</span></div></div><div class="flex items-center justify-between px-2 pt-2"><span class="font-label-sm text-label-sm text-outline">© 2024 CTEC Devices</span><span class="material-symbols-outlined text-outline hover:text-on-surface text-[18px] cursor-pointer transition-colors">help_outline</span></div></div></aside><div class="pl-72 flex flex-col min-h-screen"><header class="fixed top-0 left-72 right-0 h-16 bg-surface-container-low/70 backdrop-blur-2xl z-40 shadow-[0_4px_24px_rgba(0,0,0,0.4)]"><div class="h-16 w-full px-space-lg flex items-center justify-between gap-4"><div class="flex items-center gap-4 flex-1 max-w-md"><div class="relative w-full"><span class="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-outline text-[18px]">search</span><input class="w-full pl-10 pr-4 py-1.5 rounded-lg bg-surface-container-lowest/80 text-on-surface placeholder:text-outline font-body-sm text-body-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-inner" placeholder="ค้นหาเคสผ่าตัด, โรงพยาบาล, หรือแพทย์..." type="text"/></div></div><div class="flex items-center gap-space-md"><button class="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-container text-on-primary font-label-lg text-label-lg shadow-[0_4px_20px_rgba(255,94,30,0.35)] hover:shadow-[0_4px_24px_rgba(255,94,30,0.5)] transition-all" type="button"><span class="material-symbols-outlined text-[18px]">add_circle</span><span>+ บันทึกเคสใหม่</span></button><button class="relative p-2 rounded-lg bg-surface-container-high/60 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors" type="button"><span class="material-symbols-outlined text-[20px]">notifications</span><span class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary-container ring-2 ring-surface"></span></button><div class="h-6 w-px bg-outline-variant/30"></div><div class="flex items-center gap-3 pl-1"><div class="flex flex-col text-right"><span class="font-label-lg text-label-lg text-on-surface">Dr. Pattarapon S.</span><span class="inline-flex items-center justify-end font-label-sm text-label-sm text-secondary">ผู้บริหาร (Executive Director)</span></div><div class="relative"><img alt="Profile" class="w-8 h-8 rounded-full object-cover ring-1 ring-primary/40" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD2nIyGFRadPpR9MDDBvQXPc7WGzKCkLbfzAOkGGka-0VBPuIWnWtW9cVdkzuVhENewFjfpFTPK1lGNV3tAn30TY12rWH33VviJ_Zjuye8OGVF9GL09nzLPx8TCogzpNi7YCVegOsIbeTKRpfy45C2kCulH1u_peS6t9vtvAchsbZf0KOkbQAnDbadh7jFAnq2QYoGpiLfPs4kvcI-FPF0kpm3fZaf432ShtU4OQOQ"/><span class="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-secondary ring-1 ring-surface"></span></div></div></div></div></header><main class="relative w-full pt-16 bg-surface min-h-screen"><div class="flex flex-col w-full">
+<!-- Dynamic Ambient Glow Backdrops -->
+<div class="relative w-full overflow-hidden px-space-lg py-space-xl flex flex-col gap-space-xl">
+<div class="absolute -top-40 -left-20 w-96 h-96 rounded-full bg-primary-container/10 blur-[130px] pointer-events-none"></div>
+<div class="absolute top-1/3 -right-20 w-[480px] h-[480px] rounded-full bg-secondary-container/10 blur-[150px] pointer-events-none"></div>
+<!-- Section 1: Executive Command Header & Synchronized Filter Rail -->
+<div class="flex flex-col xl:flex-row xl:items-end justify-between gap-space-lg">
+<div class="flex flex-col gap-2 max-w-3xl">
+<div class="flex items-center gap-3">
+<div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-container-high/80 backdrop-blur-xl shadow-inner">
+<span class="relative flex h-2 w-2">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary-container opacity-90"></span>
+<span class="relative inline-flex rounded-full h-2 w-2 bg-primary-container"></span>
+</span>
+<span class="font-label-sm text-label-sm text-primary uppercase tracking-widest">Firebase Firestore Connected</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant">• Realtime Sync 1s ago</span>
+</div>
+<span class="px-2.5 py-0.5 rounded-full bg-secondary-container/20 font-label-sm text-label-sm text-secondary font-medium">Q1/2025 Live Pulse</span>
+</div>
+<h1 class="font-headline-xl text-headline-xl text-on-surface tracking-tight">
+          ภาพรวมผลงานการขายและสถิติเคสโรงพยาบาลทั่วประเทศ
+        </h1>
+<p class="font-body-md text-body-md text-on-surface-variant">
+          National Sales &amp; Hospital Cases Intelligence • ศูนย์รวมข้อมูลธุรกรรมเคสผ่าตัดและอุปกรณ์การแพทย์ระดับผู้บริหาร CTEC Devices
+        </p>
+</div>
+<!-- Action Filtering Hub -->
+<div class="flex flex-wrap items-center gap-2.5 bg-surface-container-low/80 backdrop-blur-2xl p-2 rounded-xl shadow-lg">
+<!-- Date Selector -->
+<div class="relative">
+<select class="appearance-none bg-surface-container-high/90 text-on-surface font-label-md text-label-md pl-3 pr-8 py-2 rounded-lg focus:outline-none cursor-pointer shadow-sm">
+<option>ไตรมาส Q1/2025</option>
+<option>เดือนนี้ (มีนาคม 2025)</option>
+<option>7 วันล่าสุด</option>
+<option>Custom Range...</option>
+</select>
+<span class="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-outline pointer-events-none text-[18px]">expand_more</span>
+</div>
+<!-- Region Selector -->
+<div class="relative">
+<select class="appearance-none bg-surface-container-high/90 text-on-surface font-label-md text-label-md pl-3 pr-8 py-2 rounded-lg focus:outline-none cursor-pointer shadow-sm">
+<option>ทุกภูมิภาค (ทั่วประเทศ)</option>
+<option>กรุงเทพฯ &amp; ภาคกลาง</option>
+<option>ภาคอีสาน (ตะวันออกเฉียงเหนือ)</option>
+<option>ภาคเหนือ</option>
+<option>ภาคใต้</option>
+<option>ภาคตะวันออก</option>
+</select>
+<span class="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-outline pointer-events-none text-[18px]">filter_alt</span>
+</div>
+<!-- Team Selector -->
+<div class="relative">
+<select class="appearance-none bg-surface-container-high/90 text-on-surface font-label-md text-label-md pl-3 pr-8 py-2 rounded-lg focus:outline-none cursor-pointer shadow-sm">
+<option>ทีมเซลล์ทั้งหมด (5 เขต)</option>
+<option>ทีมศัลยกรรมระบบประสาท &amp; กระดูก</option>
+<option>ทีมเทคโนโลยีหัวใจและหลอดเลือด</option>
+<option>ทีมนวัตกรรมหุ่นยนต์ผ่าตัด</option>
+</select>
+<span class="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-outline pointer-events-none text-[18px]">group</span>
+</div>
+<button class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container-highest/80 hover:bg-surface-container-highest text-on-surface font-label-md text-label-md transition-all shadow-sm" type="button">
+<span class="material-symbols-outlined text-[16px] text-primary">autorenew</span>
+<span>รีเฟรชสถิติ</span>
+</button>
+</div>
+</div>
+<!-- Section 2: Top KPI Apple Frosted Glass Cards -->
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-space-md">
+<!-- Card 1: Total Cases Closed -->
+<div class="relative overflow-hidden rounded-xl bg-surface-container/60 backdrop-blur-2xl p-4 shadow-xl transition-all duration-300 hover:-translate-y-1">
+<div class="absolute -right-6 -bottom-6 w-24 h-24 rounded-full bg-primary-container/15 blur-xl pointer-events-none"></div>
+<div class="flex items-center justify-between mb-2">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider">เคสปิดการขายสำเร็จ</span>
+<span class="flex items-center text-primary font-label-sm text-label-sm bg-primary-container/15 px-1.5 py-0.5 rounded">
+<span class="material-symbols-outlined text-[14px]">trending_up</span>+18.4%
+          </span>
+</div>
+<div class="flex items-baseline gap-2 mt-1">
+<span class="font-stat-value text-stat-value text-on-surface tracking-tight">1,482</span>
+<span class="font-label-md text-label-md text-on-surface-variant">เคส</span>
+</div>
+<div class="flex items-center justify-between mt-3 pt-2">
+<span class="font-body-sm text-body-sm text-outline">เป้าหมายรวม 1,550</span>
+<!-- Inline Sparkline SVG -->
+<svg class="w-20 h-6 text-primary" fill="none" viewbox="0 0 80 24">
+<path d="M2 18 L18 14 L34 16 L50 8 L66 11 L78 3" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</div>
+</div>
+<!-- Card 2: Total Revenue Pipeline -->
+<div class="relative overflow-hidden rounded-xl bg-surface-container/60 backdrop-blur-2xl p-4 shadow-xl transition-all duration-300 hover:-translate-y-1">
+<div class="absolute -right-6 -bottom-6 w-24 h-24 rounded-full bg-secondary-container/15 blur-xl pointer-events-none"></div>
+<div class="flex items-center justify-between mb-2">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider">ยอดขายสะสมสุทธิ</span>
+<span class="flex items-center text-secondary font-label-sm text-label-sm bg-secondary-container/15 px-1.5 py-0.5 rounded">
+            บรรลุ 94%
+          </span>
+</div>
+<div class="flex items-baseline gap-1 mt-1">
+<span class="font-stat-value text-stat-value text-secondary tracking-tight">฿142.85</span>
+<span class="font-headline-sm text-headline-sm text-secondary">M</span>
+</div>
+<div class="w-full bg-surface-container-highest/60 rounded-full h-1.5 mt-3 overflow-hidden">
+<div class="bg-gradient-to-r from-secondary-container to-primary-container h-1.5 rounded-full" style="width: 94%"></div>
+</div>
+</div>
+<!-- Card 3: Active Hospitals -->
+<div class="relative overflow-hidden rounded-xl bg-surface-container/60 backdrop-blur-2xl p-4 shadow-xl transition-all duration-300 hover:-translate-y-1">
+<div class="flex items-center justify-between mb-2">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider">รพ. มีเคสต่อเนื่อง</span>
+<span class="material-symbols-outlined text-primary text-[20px]">local_hospital</span>
+</div>
+<div class="flex items-baseline gap-2 mt-1">
+<span class="font-stat-value text-stat-value text-on-surface tracking-tight">184</span>
+<span class="font-label-md text-label-md text-on-surface-variant">/ 240 แห่ง</span>
+</div>
+<div class="flex items-center gap-1.5 mt-3 pt-2">
+<div class="w-2 h-2 rounded-full bg-secondary"></div>
+<span class="font-body-sm text-body-sm text-on-surface-variant">ครอบคลุมเครือข่าย 76.6%</span>
+</div>
+</div>
+<!-- Card 4: Top Regional Hotspot -->
+<div class="relative overflow-hidden rounded-xl bg-surface-container/60 backdrop-blur-2xl p-4 shadow-xl transition-all duration-300 hover:-translate-y-1">
+<div class="flex items-center justify-between mb-2">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider">พื้นที่เคสหนาแน่นสูงสุด</span>
+<span class="material-symbols-outlined text-primary-container text-[20px]">pixel_4_4xl_4a_5_5a_5g</span>
+</div>
+<div class="flex flex-col mt-1">
+<span class="font-headline-md text-headline-md text-on-surface font-semibold truncate">ภาคกลาง &amp; กทม.</span>
+<div class="flex items-center gap-2 mt-1">
+<span class="font-stat-value text-stat-value text-primary">612</span>
+<span class="font-body-sm text-body-sm text-on-surface-variant">เคส (41.2% ของรวม)</span>
+</div>
+</div>
+</div>
+<!-- Card 5: Active Sales Reps Online -->
+<div class="relative overflow-hidden rounded-xl bg-surface-container/60 backdrop-blur-2xl p-4 shadow-xl transition-all duration-300 hover:-translate-y-1">
+<div class="flex items-center justify-between mb-2">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider">เซลล์ภาคสนามวันนี้</span>
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-label-sm font-label-sm bg-primary-container/20 text-primary">
+            Active Now
+          </span>
+</div>
+<div class="flex items-baseline gap-2 mt-1">
+<span class="font-stat-value text-stat-value text-on-surface tracking-tight">28</span>
+<span class="font-label-md text-label-md text-outline">/ 30 คน</span>
+</div>
+<div class="flex items-center gap-2 mt-3 pt-2">
+<div class="flex -space-x-1.5 overflow-hidden">
+<div class="inline-block h-5 w-5 rounded-full bg-primary-container/50 text-center font-label-sm text-[9px] leading-5 text-on-primary font-bold">NW</div>
+<div class="inline-block h-5 w-5 rounded-full bg-secondary-container/50 text-center font-label-sm text-[9px] leading-5 text-on-secondary font-bold">KD</div>
+<div class="inline-block h-5 w-5 rounded-full bg-tertiary-container/50 text-center font-label-sm text-[9px] leading-5 text-on-tertiary font-bold">TM</div>
+</div>
+<span class="font-body-sm text-body-sm text-on-surface-variant">กำลังบันทึกหน้างาน</span>
+</div>
+</div>
+</div>
+<!-- Section 3: Central Analytics Split (60% Leaderboard, 40% Hospital Hotspots) -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-space-lg items-start">
+<!-- 60% Column: Sales Rep Leaderboard & Case Volume -->
+<div class="lg:col-span-7 flex flex-col rounded-xl bg-surface-container/60 backdrop-blur-2xl shadow-2xl p-space-lg">
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-space-lg">
+<div>
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-[22px]">leaderboard</span>
+<h2 class="font-headline-md text-headline-md text-on-surface">ยอดขายและจำนวนเคสแยกตามผู้แทนขาย</h2>
+</div>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">ผลงานรายบุคคลเทียบเป้าหมายไตรมาสแบบเรียลไทม์</p>
+</div>
+<div class="flex items-center gap-2">
+<span class="font-label-sm text-label-sm text-outline">จัดเรียงตาม:</span>
+<button class="px-2.5 py-1 rounded bg-surface-container-high text-primary font-label-sm text-label-sm" type="button">ยอดเงิน (Revenue)</button>
+<button class="px-2.5 py-1 rounded bg-transparent hover:bg-surface-container text-on-surface-variant font-label-sm text-label-sm" type="button">จำนวนเคส</button>
+</div>
+</div>
+<!-- Leaderboard Reps Interactive Container -->
+<div class="flex flex-col gap-3">
+<!-- Rep 1: นายณัฐวุฒิ สมบูรณ์ -->
+<div class="group relative flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-lg bg-surface-container-low/70 hover:bg-surface-container-high transition-all shadow-md">
+<div class="flex items-center gap-3.5">
+<div class="relative flex items-center justify-center w-10 h-10 rounded-full bg-primary-container text-on-primary font-headline-sm text-headline-sm shadow-md">
+                1
+              </div>
+<div class="flex flex-col">
+<div class="flex items-center gap-2">
+<span class="font-label-lg text-label-lg text-on-surface">นายณัฐวุฒิ สมบูรณ์</span>
+<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary-container/20 text-secondary font-label-sm text-label-sm">
+<span class="material-symbols-outlined text-[13px]">stars</span> Star Performer
+                  </span>
+</div>
+<div class="flex items-center gap-2 font-body-sm text-body-sm text-on-surface-variant mt-0.5">
+<span class="text-secondary">ทีมภาคกลาง &amp; กทม.</span>
+<span>•</span>
+<span>86 เคสสำเร็จ</span>
+</div>
+</div>
+</div>
+<div class="flex items-center justify-between sm:justify-end gap-6 mt-3 sm:mt-0">
+<div class="flex flex-col text-right">
+<span class="font-headline-sm text-headline-sm text-secondary font-bold">฿12,400,000</span>
+<div class="flex items-center justify-end gap-1.5 mt-0.5">
+<div class="w-24 bg-surface-container-highest rounded-full h-1.5 overflow-hidden">
+<div class="bg-secondary h-1.5 rounded-full" style="width: 100%"></div>
+</div>
+<span class="font-label-sm text-label-sm text-primary font-semibold">115%</span>
+</div>
+</div>
+<span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors text-[20px]">chevron_right</span>
+</div>
+</div>
+<!-- Rep 2: น.ส. กานดา วงศ์สุวรรณ -->
+<div class="group relative flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-lg bg-surface-container-low/70 hover:bg-surface-container-high transition-all shadow-md">
+<div class="flex items-center gap-3.5">
+<div class="flex items-center justify-center w-10 h-10 rounded-full bg-surface-container-highest text-on-surface font-headline-sm text-headline-sm">
+                2
+              </div>
+<div class="flex flex-col">
+<div class="flex items-center gap-2">
+<span class="font-label-lg text-label-lg text-on-surface">น.ส. กานดา วงศ์สุวรรณ</span>
+</div>
+<div class="flex items-center gap-2 font-body-sm text-body-sm text-on-surface-variant mt-0.5">
+<span>ทีมภาคอีสาน (NE Core)</span>
+<span>•</span>
+<span>74 เคสสำเร็จ</span>
+</div>
+</div>
+</div>
+<div class="flex items-center justify-between sm:justify-end gap-6 mt-3 sm:mt-0">
+<div class="flex flex-col text-right">
+<span class="font-headline-sm text-headline-sm text-on-surface font-semibold">฿10,800,000</span>
+<div class="flex items-center justify-end gap-1.5 mt-0.5">
+<div class="w-24 bg-surface-container-highest rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary-container h-1.5 rounded-full" style="width: 100%"></div>
+</div>
+<span class="font-label-sm text-label-sm text-secondary font-semibold">108%</span>
+</div>
+</div>
+<span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors text-[20px]">chevron_right</span>
+</div>
+</div>
+<!-- Rep 3: นายธีรภัทร เมธากุล -->
+<div class="group relative flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-lg bg-surface-container-low/70 hover:bg-surface-container-high transition-all shadow-md">
+<div class="flex items-center gap-3.5">
+<div class="flex items-center justify-center w-10 h-10 rounded-full bg-surface-container-highest text-on-surface font-headline-sm text-headline-sm">
+                3
+              </div>
+<div class="flex flex-col">
+<div class="flex items-center gap-2">
+<span class="font-label-lg text-label-lg text-on-surface">นายธีรภัทร เมธากุล</span>
+</div>
+<div class="flex items-center gap-2 font-body-sm text-body-sm text-on-surface-variant mt-0.5">
+<span>ทีมภาคเหนือ (North Cluster)</span>
+<span>•</span>
+<span>69 เคสสำเร็จ</span>
+</div>
+</div>
+</div>
+<div class="flex items-center justify-between sm:justify-end gap-6 mt-3 sm:mt-0">
+<div class="flex flex-col text-right">
+<span class="font-headline-sm text-headline-sm text-on-surface font-semibold">฿9,500,000</span>
+<div class="flex items-center justify-end gap-1.5 mt-0.5">
+<div class="w-24 bg-surface-container-highest rounded-full h-1.5 overflow-hidden">
+<div class="bg-secondary-container h-1.5 rounded-full" style="width: 100%"></div>
+</div>
+<span class="font-label-sm text-label-sm text-secondary font-semibold">102%</span>
+</div>
+</div>
+<span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors text-[20px]">chevron_right</span>
+</div>
+</div>
+<!-- Rep 4: น.ส. วลัยพร สิริสุข -->
+<div class="group relative flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-lg bg-surface-container-low/70 hover:bg-surface-container-high transition-all shadow-md">
+<div class="flex items-center gap-3.5">
+<div class="flex items-center justify-center w-10 h-10 rounded-full bg-surface-container-highest text-on-surface font-headline-sm text-headline-sm">
+                4
+              </div>
+<div class="flex flex-col">
+<div class="flex items-center gap-2">
+<span class="font-label-lg text-label-lg text-on-surface">น.ส. วลัยพร สิริสุข</span>
+</div>
+<div class="flex items-center gap-2 font-body-sm text-body-sm text-on-surface-variant mt-0.5">
+<span>ทีมภาคใต้ (Southern Zone)</span>
+<span>•</span>
+<span>62 เคสสำเร็จ</span>
+</div>
+</div>
+</div>
+<div class="flex items-center justify-between sm:justify-end gap-6 mt-3 sm:mt-0">
+<div class="flex flex-col text-right">
+<span class="font-headline-sm text-headline-sm text-on-surface font-semibold">฿8,900,000</span>
+<div class="flex items-center justify-end gap-1.5 mt-0.5">
+<div class="w-24 bg-surface-container-highest rounded-full h-1.5 overflow-hidden">
+<div class="bg-tertiary h-1.5 rounded-full" style="width: 97%"></div>
+</div>
+<span class="font-label-sm text-label-sm text-tertiary font-semibold">97%</span>
+</div>
+</div>
+<span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors text-[20px]">chevron_right</span>
+</div>
+</div>
+<!-- Rep 5: นายอัศวิน รัตนโชติ -->
+<div class="group relative flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-lg bg-surface-container-low/70 hover:bg-surface-container-high transition-all shadow-md">
+<div class="flex items-center gap-3.5">
+<div class="flex items-center justify-center w-10 h-10 rounded-full bg-surface-container-highest text-on-surface font-headline-sm text-headline-sm">
+                5
+              </div>
+<div class="flex flex-col">
+<div class="flex items-center gap-2">
+<span class="font-label-lg text-label-lg text-on-surface">นายอัศวิน รัตนโชติ</span>
+</div>
+<div class="flex items-center gap-2 font-body-sm text-body-sm text-on-surface-variant mt-0.5">
+<span>ทีมภาคตะวันออก (EEC Medical)</span>
+<span>•</span>
+<span>58 เคสสำเร็จ</span>
+</div>
+</div>
+</div>
+<div class="flex items-center justify-between sm:justify-end gap-6 mt-3 sm:mt-0">
+<div class="flex flex-col text-right">
+<span class="font-headline-sm text-headline-sm text-on-surface font-semibold">฿8,200,000</span>
+<div class="flex items-center justify-end gap-1.5 mt-0.5">
+<div class="w-24 bg-surface-container-highest rounded-full h-1.5 overflow-hidden">
+<div class="bg-tertiary h-1.5 rounded-full" style="width: 94%"></div>
+</div>
+<span class="font-label-sm text-label-sm text-tertiary font-semibold">94%</span>
+</div>
+</div>
+<span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors text-[20px]">chevron_right</span>
+</div>
+</div>
+</div>
+<!-- Leaderboard Summary Strip -->
+<div class="flex items-center justify-between mt-space-md pt-space-sm">
+<span class="font-body-sm text-body-sm text-on-surface-variant">แสดงรายชื่อท็อป 5 จากผู้แทนทั้งหมด 30 ราย</span>
+<button class="text-primary hover:text-primary-fixed font-label-md text-label-md flex items-center gap-1" type="button">
+<span>ดูตารางผลงานเซลล์ทั้งหมด</span>
+<span class="material-symbols-outlined text-[16px]">arrow_forward</span>
+</button>
+</div>
+</div>
+<!-- 40% Column: Top Case Volume Hospital Hotspots -->
+<div class="lg:col-span-5 flex flex-col rounded-xl bg-surface-container/60 backdrop-blur-2xl shadow-2xl p-space-lg">
+<div class="flex items-center justify-between mb-space-lg">
+<div>
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary-container text-[22px]">emergency</span>
+<h2 class="font-headline-md text-headline-md text-on-surface">โรงพยาบาลเคสหนาแน่นสูงสุด</h2>
+</div>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">ศูนย์บริการที่อุปกรณ์ CTEC ใช้งานต่อเนื่อง</p>
+</div>
+<span class="px-2 py-0.5 rounded bg-primary-container/20 text-primary font-label-sm text-label-sm font-semibold">
+            Top Hotspots
+          </span>
+</div>
+<!-- Hospital Hotspot Cards List -->
+<div class="flex flex-col gap-3">
+<!-- Hospital 1: Siriraj (Critical High) -->
+<div class="relative overflow-hidden rounded-xl bg-surface-container-low/80 p-4 transition-all hover:bg-surface-container-high shadow-lg">
+<div class="absolute -right-8 -top-8 w-24 h-24 rounded-full bg-primary-container/20 blur-xl pointer-events-none"></div>
+<div class="flex items-start justify-between gap-3">
+<div class="flex items-start gap-3">
+<div class="relative mt-1">
+<!-- Radiant Pulsing Beacon -->
+<span class="relative flex h-3 w-3">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary-container opacity-90"></span>
+<span class="relative inline-flex rounded-full h-3 w-3 bg-primary-container"></span>
+</span>
+</div>
+<div class="flex flex-col">
+<div class="flex items-center gap-2">
+<span class="font-headline-sm text-headline-sm text-on-surface font-semibold">1. รพ.ศิริราช (Siriraj Hospital)</span>
+</div>
+<span class="font-body-sm text-body-sm text-primary mt-0.5">Cardiovascular &amp; Neuro Implants</span>
+</div>
+</div>
+<div class="flex flex-col items-end">
+<span class="font-headline-md text-headline-md text-primary font-bold">148 <span class="font-body-sm text-body-sm text-on-surface-variant font-normal">เคส</span></span>
+<span class="px-2 py-0.5 rounded-full bg-primary-container/30 text-primary-fixed font-label-sm text-label-sm font-bold tracking-wide mt-1">
+                  CRITICAL HIGH
+                </span>
+</div>
+</div>
+<div class="w-full bg-surface-container-highest rounded-full h-1 mt-3 overflow-hidden">
+<div class="bg-primary-container h-1 rounded-full" style="width: 95%"></div>
+</div>
+</div>
+<!-- Hospital 2: Chulalongkorn (High) -->
+<div class="rounded-xl bg-surface-container-low/80 p-4 transition-all hover:bg-surface-container-high shadow-lg">
+<div class="flex items-start justify-between gap-3">
+<div class="flex items-start gap-3">
+<div class="relative mt-1">
+<span class="flex h-3 w-3 rounded-full bg-secondary-container"></span>
+</div>
+<div class="flex flex-col">
+<span class="font-headline-sm text-headline-sm text-on-surface font-semibold">2. รพ.จุฬาลงกรณ์ สภากาชาดไทย</span>
+<span class="font-body-sm text-body-sm text-secondary mt-0.5">Orthopedic Joint Systems</span>
+</div>
+</div>
+<div class="flex flex-col items-end">
+<span class="font-headline-md text-headline-md text-on-surface font-bold">132 <span class="font-body-sm text-body-sm text-on-surface-variant font-normal">เคส</span></span>
+<span class="px-2 py-0.5 rounded-full bg-secondary-container/20 text-secondary font-label-sm text-label-sm font-semibold mt-1">
+                  HIGH HEAT
+                </span>
+</div>
+</div>
+<div class="w-full bg-surface-container-highest rounded-full h-1 mt-3 overflow-hidden">
+<div class="bg-secondary-container h-1 rounded-full" style="width: 82%"></div>
+</div>
+</div>
+<!-- Hospital 3: Maharaj Nakorn Chiang Mai (High) -->
+<div class="rounded-xl bg-surface-container-low/80 p-4 transition-all hover:bg-surface-container-high shadow-lg">
+<div class="flex items-start justify-between gap-3">
+<div class="flex items-start gap-3">
+<div class="relative mt-1">
+<span class="flex h-3 w-3 rounded-full bg-secondary-container"></span>
+</div>
+<div class="flex flex-col">
+<span class="font-headline-sm text-headline-sm text-on-surface font-semibold">3. รพ.มหาราชนครเชียงใหม่</span>
+<span class="font-body-sm text-body-sm text-secondary mt-0.5">Surgical Robotics &amp; Endoscopy</span>
+</div>
+</div>
+<div class="flex flex-col items-end">
+<span class="font-headline-md text-headline-md text-on-surface font-bold">98 <span class="font-body-sm text-body-sm text-on-surface-variant font-normal">เคส</span></span>
+<span class="px-2 py-0.5 rounded-full bg-secondary-container/20 text-secondary font-label-sm text-label-sm font-semibold mt-1">
+                  HIGH HEAT
+                </span>
+</div>
+</div>
+<div class="w-full bg-surface-container-highest rounded-full h-1 mt-3 overflow-hidden">
+<div class="bg-secondary-container h-1 rounded-full" style="width: 64%"></div>
+</div>
+</div>
+<!-- Hospital 4: Khon Kaen Hospital (Moderate) -->
+<div class="rounded-xl bg-surface-container-low/80 p-4 transition-all hover:bg-surface-container-high shadow-lg">
+<div class="flex items-start justify-between gap-3">
+<div class="flex items-start gap-3">
+<div class="relative mt-1">
+<span class="flex h-3 w-3 rounded-full bg-tertiary"></span>
+</div>
+<div class="flex flex-col">
+<span class="font-headline-sm text-headline-sm text-on-surface font-semibold">4. รพ.ขอนแก่น (ศูนย์แพทย์อีสาน)</span>
+<span class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">CTEC Spine &amp; Trauma Solutions</span>
+</div>
+</div>
+<div class="flex flex-col items-end">
+<span class="font-headline-md text-headline-md text-on-surface font-bold">85 <span class="font-body-sm text-body-sm text-on-surface-variant font-normal">เคส</span></span>
+<span class="px-2 py-0.5 rounded-full bg-tertiary-container/20 text-tertiary font-label-sm text-label-sm font-semibold mt-1">
+                  MODERATE
+                </span>
+</div>
+</div>
+<div class="w-full bg-surface-container-highest rounded-full h-1 mt-3 overflow-hidden">
+<div class="bg-tertiary h-1 rounded-full" style="width: 52%"></div>
+</div>
+</div>
+<!-- Hospital 5: Songklanagarind (Moderate) -->
+<div class="rounded-xl bg-surface-container-low/80 p-4 transition-all hover:bg-surface-container-high shadow-lg">
+<div class="flex items-start justify-between gap-3">
+<div class="flex items-start gap-3">
+<div class="relative mt-1">
+<span class="flex h-3 w-3 rounded-full bg-tertiary"></span>
+</div>
+<div class="flex flex-col">
+<span class="font-headline-sm text-headline-sm text-on-surface font-semibold">5. รพ.สงขลานครินทร์ (มอ. หาดใหญ่)</span>
+<span class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">Interventional Cardiology Stents</span>
+</div>
+</div>
+<div class="flex flex-col items-end">
+<span class="font-headline-md text-headline-md text-on-surface font-bold">79 <span class="font-body-sm text-body-sm text-on-surface-variant font-normal">เคส</span></span>
+<span class="px-2 py-0.5 rounded-full bg-tertiary-container/20 text-tertiary font-label-sm text-label-sm font-semibold mt-1">
+                  MODERATE
+                </span>
+</div>
+</div>
+<div class="w-full bg-surface-container-highest rounded-full h-1 mt-3 overflow-hidden">
+<div class="bg-tertiary h-1 rounded-full" style="width: 48%"></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Section 4: Live Activity Feed & Executive Export Hub -->
+<div class="flex flex-col rounded-xl bg-surface-container/60 backdrop-blur-2xl shadow-2xl p-space-lg">
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-space-md">
+<div class="flex items-center gap-3">
+<div class="relative flex items-center justify-center w-8 h-8 rounded-lg bg-primary-container/20 text-primary">
+<span class="material-symbols-outlined text-[20px]">rss_feed</span>
+</div>
+<div>
+<h2 class="font-headline-md text-headline-md text-on-surface">ฟีดกิจกรรมล่าสุดของเซลล์ (Live Firebase Stream)</h2>
+<p class="font-body-sm text-body-sm text-on-surface-variant">รายงานการป้อนเคสผ่าตัดและใบสั่งซื้อจากโรงพยาบาลทั่วประเทศแบบวินาทีต่อวินาที</p>
+</div>
+</div>
+<!-- Export Buttons Group -->
+<div class="flex items-center gap-2">
+<button class="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-on-surface font-label-md text-label-md transition-colors shadow-sm" type="button">
+<span class="material-symbols-outlined text-[18px] text-secondary">table_chart</span>
+<span>Excel / Sheets</span>
+</button>
+<button class="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-container text-on-primary font-label-lg text-label-lg shadow-lg hover:shadow-xl transition-all" type="button">
+<span class="material-symbols-outlined text-[18px]">download</span>
+<span>ดาวน์โหลดรายงานสรุป (PDF)</span>
+</button>
+</div>
+</div>
+<!-- Realtime Event Stream Items -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-space-md">
+<!-- Event Card 1 -->
+<div class="flex flex-col p-4 rounded-xl bg-surface-container-low/70 hover:bg-surface-container-high transition-all shadow-md">
+<div class="flex items-center justify-between mb-2">
+<div class="flex items-center gap-2">
+<span class="relative flex h-2 w-2">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-80"></span>
+<span class="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
+</span>
+<span class="font-label-sm text-label-sm text-primary font-bold">2 นาทีที่แล้ว</span>
+</div>
+<span class="px-2 py-0.5 rounded bg-surface-container-highest text-on-surface-variant font-label-sm text-label-sm">
+              รพ.ราชวิถี
+            </span>
+</div>
+<div class="flex items-baseline gap-1 mt-1">
+<span class="font-label-lg text-label-lg text-on-surface">เซลล์ ภานุวัฒน์ บันทึกเคสใหม่</span>
+</div>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-1">
+            ผ่าตัดเปลี่ยนข้อเข่าเทียม (Total Knee Replacement)
+          </p>
+<div class="flex items-center justify-between mt-3 pt-2">
+<span class="font-label-md text-label-md text-secondary font-bold">฿450,000</span>
+<span class="inline-flex items-center gap-1 font-label-sm text-label-sm text-secondary bg-secondary-container/20 px-2 py-0.5 rounded">
+<span class="material-symbols-outlined text-[14px]">check_circle</span> ผ่านการอนุมัติ
+            </span>
+</div>
+</div>
+<!-- Event Card 2 -->
+<div class="flex flex-col p-4 rounded-xl bg-surface-container-low/70 hover:bg-surface-container-high transition-all shadow-md">
+<div class="flex items-center justify-between mb-2">
+<div class="flex items-center gap-2">
+<span class="h-2 w-2 rounded-full bg-secondary"></span>
+<span class="font-label-sm text-label-sm text-secondary font-bold">9 นาทีที่แล้ว</span>
+</div>
+<span class="px-2 py-0.5 rounded bg-surface-container-highest text-on-surface-variant font-label-sm text-label-sm">
+              รพ.รามาธิบดี
+            </span>
+</div>
+<div class="flex items-baseline gap-1 mt-1">
+<span class="font-label-lg text-label-lg text-on-surface">เซลล์ ศศิธร อัปเดตสถานะ</span>
+</div>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-1">
+            ส่งมอบระบบเจาะกะโหลกความเร็วสูง (High-Speed Drill)
+          </p>
+<div class="flex items-center justify-between mt-3 pt-2">
+<span class="font-label-md text-label-md text-secondary font-bold">฿890,000</span>
+<span class="inline-flex items-center gap-1 font-label-sm text-label-sm text-primary bg-primary-container/20 px-2 py-0.5 rounded">
+<span class="material-symbols-outlined text-[14px]">local_shipping</span> จัดส่งแล้ว
+            </span>
+</div>
+</div>
+<!-- Event Card 3 -->
+<div class="flex flex-col p-4 rounded-xl bg-surface-container-low/70 hover:bg-surface-container-high transition-all shadow-md">
+<div class="flex items-center justify-between mb-2">
+<div class="flex items-center gap-2">
+<span class="h-2 w-2 rounded-full bg-outline"></span>
+<span class="font-label-sm text-label-sm text-outline font-bold">14 นาทีที่แล้ว</span>
+</div>
+<span class="px-2 py-0.5 rounded bg-surface-container-highest text-on-surface-variant font-label-sm text-label-sm">
+              รพ.ศรีนครินทร์ ขอนแก่น
+            </span>
+</div>
+<div class="flex items-baseline gap-1 mt-1">
+<span class="font-label-lg text-label-lg text-on-surface">เซลล์ วรวิทย์ แจ้งจองเคสด่วน</span>
+</div>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-1">
+            ชุดดามกระดูกสันหลัง CTEC Spine Posterior Fixation
+          </p>
+<div class="flex items-center justify-between mt-3 pt-2">
+<span class="font-label-md text-label-md text-secondary font-bold">฿320,000</span>
+<span class="inline-flex items-center gap-1 font-label-sm text-label-sm text-tertiary bg-tertiary-container/20 px-2 py-0.5 rounded">
+<span class="material-symbols-outlined text-[14px]">schedule</span> รอทีมช่างแสตนด์บาย
+            </span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div></main></div></body></html>
