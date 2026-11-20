@@ -1,19 +1,30 @@
 import React, { useState } from 'react';
-import { Check, Lock, Shield, UserCheck, UserX } from 'lucide-react';
+import { AlertTriangle, Check, Loader2, Lock, Shield, Trash2, UserCheck, UserX } from 'lucide-react';
 import {
   formatTimestamp,
   REGIONS,
   ROLE_META,
   type AuditLogItem,
+  type Deal,
+  type Hospital,
+  type NotificationItem,
+  type OfficeCase,
   type UserProfile,
   type UserRole,
 } from '../types';
 import { getFriendlyFirestoreError } from '../firebase';
-import { updateUserRoleAndStatus } from '../services/crmService';
+import {
+  clearAllWorkspaceRecords,
+  updateUserRoleAndStatus,
+} from '../services/crmService';
 
 interface AdminPanelViewProps {
   currentUser: UserProfile;
   users: UserProfile[];
+  hospitals: Hospital[];
+  deals: Deal[];
+  officeCases: OfficeCase[];
+  notifications: NotificationItem[];
   auditLogs: AuditLogItem[];
   onNotifyToast: (msg: string) => void;
 }
@@ -23,14 +34,45 @@ const ROLES_LIST: UserRole[] = ['admin', 'executive', 'manager', 'office_admin',
 export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   currentUser,
   users,
+  hospitals,
+  deals,
+  officeCases,
+  notifications,
   auditLogs,
   onNotifyToast,
 }) => {
   const isAdmin = currentUser.role === 'admin';
   const [savingUid, setSavingUid] = useState<string | null>(null);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resettingWorkspace, setResettingWorkspace] = useState(false);
   const [drafts, setDrafts] = useState<
     Record<string, { role: UserRole; department: string; territory: string; active: boolean }>
   >({});
+
+  const totalStoredRecords =
+    hospitals.length + deals.length + officeCases.length + notifications.length;
+
+  const handleConfirmResetWorkspace = async () => {
+    if (!isAdmin || resettingWorkspace) return;
+    setResettingWorkspace(true);
+    try {
+      const res = await clearAllWorkspaceRecords({
+        dealsIds: deals.map((d) => d.id),
+        hospitalsIds: hospitals.map((h) => h.id),
+        officeCaseIds: officeCases.map((c) => c.id),
+        notificationIds: notifications.map((n) => n.id),
+        actor: currentUser,
+      });
+      setShowResetConfirm(false);
+      onNotifyToast(
+        `ล้างข้อมูลเรียบร้อยแล้ว (ดีล ${res.dealsDeleted} · รพ. ${res.hospitalsDeleted} · เคสออฟฟิศ ${res.officeCasesDeleted} · แจ้งเตือน ${res.notificationsDeleted}) พร้อมเริ่มใช้งานจริง`
+      );
+    } catch (err) {
+      onNotifyToast(getFriendlyFirestoreError(err, 'ไม่สามารถล้างข้อมูลบางรายการได้ กรุณาลองใหม่'));
+    } finally {
+      setResettingWorkspace(false);
+    }
+  };
 
   const getDraft = (u: UserProfile) =>
     drafts[u.uid] || {
@@ -374,6 +416,89 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
           )}
         </div>
       </section>
+
+      {/* Admin-Only: Production Clean-Start Data Reset */}
+      {isAdmin && (
+        <section className="apple-glass rounded-2xl p-5 border border-rose-500/25 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-rose-300 font-semibold text-sm">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>ล้างข้อมูลทดลอง / รีเซ็ตฐานข้อมูลเริ่มต้น (สำหรับผู้ดูแลระบบ)</span>
+            </div>
+            <p className="text-xs text-[#e3beb3]/80 leading-relaxed">
+              หากเคยนำเข้าข้อมูลเดโม่หรือข้อมูลทดสอบเก็บไว้ในระบบ สามารถกดล้างข้อมูลทั้งหมดในฐานข้อมูลเพื่อเริ่มใช้งานจริงจากศูนย์ได้ (บัญชีผู้ใช้และสิทธิ์ RBAC จะไม่ถูกลบ)
+            </p>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1 text-xs font-mono tabular-nums text-[#C8B6AE]">
+              <span>โรงพยาบาลใน CRM: <strong className="text-white">{hospitals.length}</strong></span>
+              <span>ดีลการขาย: <strong className="text-white">{deals.length}</strong></span>
+              <span>เคสออฟฟิศ: <strong className="text-white">{officeCases.length}</strong></span>
+              <span>แจ้งเตือน: <strong className="text-white">{notifications.length}</strong></span>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            disabled={totalStoredRecords === 0 || resettingWorkspace}
+            onClick={() => setShowResetConfirm(true)}
+            className="min-h-[42px] px-4 py-2 rounded-xl text-xs font-semibold inline-flex items-center justify-center gap-2 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-rose-200 transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed whitespace-nowrap shrink-0"
+          >
+            <Trash2 className="w-4 h-4" />
+            {totalStoredRecords === 0
+              ? 'ฐานข้อมูลว่างพร้อมใช้งานจริงแล้ว'
+              : `ล้างข้อมูลในระบบ (${totalStoredRecords} รายการ)`}
+          </button>
+        </section>
+      )}
+
+      {/* Confirmation Modal for Workspace Clean Start */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="apple-glass rounded-2xl max-w-md w-full p-6 border border-rose-400/30 space-y-4 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-400/30 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-rose-300" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-white">
+                  ยืนยันล้างข้อมูลทั้งหมดเพื่อเริ่มใช้งานจริง?
+                </h3>
+                <p className="text-xs text-[#e3beb3]/80 leading-relaxed">
+                  ระบบจะลบข้อมูลในฐานข้อมูลทั้งหมด ได้แก่ โรงพยาบาล {hospitals.length} แห่ง, ดีล {deals.length} รายการ, เคสออฟฟิศ {officeCases.length} รายการ และแจ้งเตือน {notifications.length} รายการ โดยไม่สามารถกู้คืนได้ (บัญชีผู้ใช้จะคงอยู่ครบ)
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={resettingWorkspace}
+                onClick={() => setShowResetConfirm(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-[#dfe2ef] bg-white/[0.06] hover:bg-white/[0.11] border border-white/[0.1] cursor-pointer disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                disabled={resettingWorkspace}
+                onClick={() => void handleConfirmResetWorkspace()}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-rose-600 hover:bg-rose-500 inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {resettingWorkspace ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    กำลังล้างข้อมูล...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    ยืนยันล้างข้อมูลทั้งหมด
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

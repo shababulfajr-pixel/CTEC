@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { APIProvider } from '@vis.gl/react-google-maps';
 import { onAuthStateChanged, signOut, type User } from 'firebase/auth';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import {
@@ -50,27 +49,6 @@ import {
   type ExecutiveSummaryMetrics,
 } from './utils/exportReports';
 
-function sanitizeMapsKey(raw?: string): string {
-  const cleaned = (raw || '').trim();
-  return cleaned && cleaned !== 'MY_GOOGLE_MAPS_API_KEY' ? cleaned : '';
-}
-
-function getInitialGoogleMapsApiKey(): string {
-  const runtimeKey =
-    typeof window !== 'undefined'
-      ? sanitizeMapsKey(window.__APP_RUNTIME_CONFIG__?.googleMapsApiKey)
-      : '';
-  if (runtimeKey) return runtimeKey;
-
-  const viteKey = sanitizeMapsKey(import.meta.env.VITE_GOOGLE_MAPS_API_KEY);
-  if (viteKey) return viteKey;
-
-  const definedKey = sanitizeMapsKey(
-    typeof __GOOGLE_MAPS_API_KEY__ !== 'undefined' ? __GOOGLE_MAPS_API_KEY__ : ''
-  );
-  return definedKey;
-}
-
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
@@ -90,9 +68,6 @@ export default function App() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [googleMapsApiKey, setGoogleMapsApiKey] = useState<string>(getInitialGoogleMapsApiKey);
-  const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
-  const [mapsErrorCode, setMapsErrorCode] = useState<string | null>(null);
 
   // Firestore synced data
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -114,40 +89,6 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => {
       setToastMessage(null);
     }, 4500);
-  }, []);
-
-  // Fallback fetch of runtime Maps key (supports Cloud Run / Shared App runtime env injection)
-  useEffect(() => {
-    if (googleMapsApiKey) return;
-    let cancelled = false;
-    fetch('/api/runtime-config', { cache: 'no-store' })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { googleMapsApiKey?: string } | null) => {
-        if (cancelled || !data) return;
-        const key = sanitizeMapsKey(data.googleMapsApiKey);
-        if (key) setGoogleMapsApiKey(key);
-      })
-      .catch(() => {
-        // Ignore when running purely static preview without Express server
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [googleMapsApiKey]);
-
-  // Listen to Google Maps Demo Key quota & error events
-  useEffect(() => {
-    const quotaHandler = () => setMapsQuotaExceeded(true);
-    const errorHandler = (ev: Event) => {
-      const detail = (ev as CustomEvent<string>).detail;
-      if (detail) setMapsErrorCode(detail);
-    };
-    window.addEventListener('gmp-quota-exceeded', quotaHandler);
-    window.addEventListener('gmp-map-error', errorHandler);
-    return () => {
-      window.removeEventListener('gmp-quota-exceeded', quotaHandler);
-      window.removeEventListener('gmp-map-error', errorHandler);
-    };
   }, []);
 
   // Firebase Auth listener
@@ -588,24 +529,6 @@ export default function App() {
         className="pointer-events-none fixed bottom-0 right-0 w-[440px] h-[440px] rounded-full bg-[#ffaa00]/[0.07] blur-[130px] z-0"
       />
 
-      {/* Google Maps Demo Key Quota Banner (Section 8 Case A) */}
-      {mapsQuotaExceeded && (
-        <div className="bg-amber-950/95 backdrop-blur-md border-b border-amber-500/35 text-amber-200 px-4 py-2.5 text-xs md:text-sm text-center fixed top-0 inset-x-0 z-50 shadow-lg">
-          <span>
-            Google Maps Platform quota reached. If you are the app owner, visit{' '}
-            <a
-              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline font-semibold text-[#ffcf90] hover:text-white"
-            >
-              maps developer site
-            </a>{' '}
-            for instructions to update your account.
-          </span>
-        </div>
-      )}
-
       {/* Desktop Left Sidebar (260px Apple Frosted Glass) */}
       <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:fixed lg:inset-y-0 apple-glass-bar border-r border-white/[0.07] z-30">
         <div className="h-16 px-4 flex items-center gap-3 border-b border-white/[0.07]">
@@ -776,8 +699,10 @@ export default function App() {
             <DashboardView
               mode={activeTab}
               currentUser={currentUser}
+              users={users}
               hospitals={hospitals}
               deals={deals}
+              officeCases={officeCases}
               notifications={notifications}
               summary={summary}
               exportingPdf={exportingPdf}
@@ -805,10 +730,9 @@ export default function App() {
           {activeTab === 'map' && (
             <HospitalMapView
               hospitals={hospitals}
+              officeCases={officeCases}
               currentUser={currentUser}
               focusedHospitalId={focusedHospitalId}
-              hasMapsKey={Boolean(googleMapsApiKey)}
-              mapsErrorCode={mapsErrorCode}
               onSelectAddDeal={handleSelectAddDealFromMap}
               onSelectAddHospital={handleSelectAddHospital}
               onNotifyToast={showToast}
@@ -820,7 +744,6 @@ export default function App() {
               currentUser={currentUser}
               hospitals={hospitals}
               deals={deals}
-              hasMapsKey={Boolean(googleMapsApiKey)}
               globalSearch={globalSearch}
               preselectedHospitalForDeal={preselectedHospitalForDeal}
               openAddHospitalSignal={openAddHospitalSignal}
@@ -837,6 +760,10 @@ export default function App() {
             <AdminPanelView
               currentUser={currentUser}
               users={users}
+              hospitals={hospitals}
+              deals={deals}
+              officeCases={officeCases}
+              notifications={notifications}
               auditLogs={auditLogs}
               onNotifyToast={showToast}
             />
@@ -903,24 +830,6 @@ export default function App() {
       )}
     </div>
   );
-
-  if (googleMapsApiKey) {
-    return (
-      <APIProvider
-        apiKey={googleMapsApiKey}
-        language="th"
-        region="TH"
-        libraries={['places', 'marker']}
-        onError={(err) => {
-          console.error('Google Maps APIProvider error:', err);
-          setMapsErrorCode('ScriptLoadError');
-          showToast('ไม่สามารถโหลด Google Maps ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ตหรือโควตา API');
-        }}
-      >
-        {workspaceContent}
-      </APIProvider>
-    );
-  }
 
   return workspaceContent;
 }

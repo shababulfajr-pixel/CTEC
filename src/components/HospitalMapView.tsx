@@ -1,563 +1,625 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  AdvancedMarker,
-  InfoWindow,
-  Map as GoogleMap,
-  useAdvancedMarkerRef,
-  useMap,
-  useMapsLibrary,
-} from '@vis.gl/react-google-maps';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Building2,
+  Compass,
   Download,
   Flame,
+  Layers,
   Loader2,
   MapPin,
+  Minus,
   Plus,
+  RotateCcw,
   Search,
-  Sparkles,
+  X,
 } from 'lucide-react';
-import { CTEC_REFERENCE_HOTSPOTS } from '../data/ctecReferenceData';
 import {
+  matchCatalogHospitalByName,
+  normalizeHospitalNameKey,
+  THAILAND_HOSPITALS_CATALOG,
+  type ThailandHospitalEntry,
+} from '../data/thailandHospitalsCatalog';
+import {
+  projectThailandLatLng,
+  REGION_CAMERA_PRESETS,
+  THAILAND_MAP_VIEWBOX,
+  THAILAND_PROVINCES,
+  type ThailandProvinceShape,
+} from '../data/thailandMapData';
+import { getFriendlyFirestoreError } from '../firebase';
+import { createHospital } from '../services/crmService';
+import {
+  formatCompactCurrency,
   formatCurrency,
   getDensityLevel,
   getDensityMeta,
   HOSPITAL_STATUS_LABEL,
+  REGIONS,
   type DensityLevel,
   type Hospital,
+  type HospitalStatus,
   type HospitalType,
+  type OfficeCase,
+  type RegionName,
   type UserProfile,
 } from '../types';
-import { getFriendlyFirestoreError } from '../firebase';
-import { createHospital } from '../services/crmService';
-import { inferProvinceAndRegion } from './HospitalPlaceAutocomplete';
-
-interface DiscoveredHospital {
-  placeId: string;
-  name: string;
-  address: string;
-  lat: number;
-  lng: number;
-  phone: string;
-}
 
 interface HospitalMapViewProps {
   hospitals: Hospital[];
+  officeCases: OfficeCase[];
   currentUser: UserProfile;
   focusedHospitalId: string | null;
-  hasMapsKey: boolean;
-  mapsErrorCode?: string | null;
   onSelectAddDeal: (hospital: Hospital) => void;
   onSelectAddHospital: () => void;
   onNotifyToast: (msg: string) => void;
 }
 
-interface DensityMarkerProps {
-  hospital: Hospital;
-  viewMode: 'density' | 'status';
-  isSelected: boolean;
-  onSelect: (id: string | null) => void;
-  onAddDeal: (hospital: Hospital) => void;
+interface UnifiedMapHospital {
+  id: string;
+  catalogId?: string;
+  crmHospital?: Hospital;
+  inCrm: boolean;
+  name: string;
+  address: string;
+  province: string;
+  region: RegionName;
+  hospitalType: HospitalType;
+  lat: number;
+  lng: number;
+  x: number;
+  y: number;
+  crmCases: number;
+  officeCasesCount: number;
+  totalCases: number;
+  totalRevenue: number;
+  status: HospitalStatus;
+  ownerName: string;
+  isCtecReference?: boolean;
 }
 
-const HospitalDensityMarker: React.FC<DensityMarkerProps> = ({
-  hospital,
-  viewMode,
-  isSelected,
-  onSelect,
-  onAddDeal,
-}) => {
-  const [markerRef, marker] = useAdvancedMarkerRef();
-  const density = getDensityMeta(hospital.caseCount);
-
-  const haloSize =
-    hospital.caseCount >= 120
-      ? 116
-      : density.level === 'high'
-        ? Math.min(104, 68 + Math.round(hospital.caseCount * 0.45))
-        : density.level === 'medium'
-          ? 56
-          : density.level === 'low'
-            ? 40
-            : 28;
-
-  const coreSize =
-    hospital.caseCount >= 120
-      ? 40
-      : density.level === 'high'
-        ? 34
-        : density.level === 'medium'
-          ? 30
-          : density.level === 'low'
-            ? 26
-            : 22;
-
-  const haloGradient =
-    hospital.caseCount >= 120
-      ? 'radial-gradient(circle, rgba(255,94,30,0.55) 0%, rgba(255,94,30,0.22) 52%, rgba(255,94,30,0) 76%)'
-      : density.level === 'high'
-        ? 'radial-gradient(circle, rgba(255,170,0,0.48) 0%, rgba(255,170,0,0.18) 55%, rgba(255,170,0,0) 75%)'
-        : density.level === 'medium'
-          ? 'radial-gradient(circle, rgba(238,192,88,0.40) 0%, rgba(238,192,88,0.14) 55%, rgba(238,192,88,0) 75%)'
-          : density.level === 'low'
-            ? 'radial-gradient(circle, rgba(52,211,153,0.34) 0%, rgba(52,211,153,0.12) 55%, rgba(52,211,153,0) 75%)'
-            : 'radial-gradient(circle, rgba(148,163,184,0.22) 0%, rgba(148,163,184,0) 70%)';
-
-  const statusColor =
-    hospital.status === 'high_priority'
-      ? '#FF5E1E'
-      : hospital.status === 'active'
-        ? '#FFAA00'
-        : hospital.status === 'prospect'
-          ? '#38BDF8'
-          : '#64748B';
-
-  const coreColor = viewMode === 'density' ? density.color : statusColor;
-
-  return (
-    <>
-      <AdvancedMarker
-        ref={markerRef}
-        position={{ lat: hospital.lat, lng: hospital.lng }}
-        onClick={() => onSelect(isSelected ? null : hospital.id)}
-        title={`${hospital.name} (${hospital.caseCount} เคส)`}
-        zIndex={isSelected ? 500 : Math.min(400, 10 + hospital.caseCount)}
-      >
-        <div
-          className="relative flex items-center justify-center cursor-pointer select-none"
-          style={{ width: haloSize, height: haloSize }}
-        >
-          {viewMode === 'density' && (
-            <div
-              className="absolute inset-0 rounded-full pointer-events-none"
-              style={{ background: haloGradient }}
-            />
-          )}
-          <div
-            className="relative flex items-center justify-center rounded-full text-white font-mono tabular-nums font-bold shadow-lg transition-transform hover:scale-110"
-            style={{
-              width: coreSize,
-              height: coreSize,
-              backgroundColor: coreColor,
-              border: isSelected ? '3px solid #0f131c' : '2px solid #ffffff',
-              fontSize: coreSize >= 34 ? '12px' : '11px',
-            }}
-          >
-            {hospital.caseCount}
-          </div>
-        </div>
-      </AdvancedMarker>
-
-      {isSelected && marker && (
-        <InfoWindow
-          anchor={marker}
-          onCloseClick={() => onSelect(null)}
-          maxWidth={300}
-        >
-          <div className="p-1.5 text-slate-900 space-y-2.5 min-w-[230px]">
-            <div>
-              <div className="text-[11px] text-slate-500">
-                {hospital.hospitalType} · {hospital.province || hospital.region}
-              </div>
-              <h3 className="text-sm font-bold text-slate-900 leading-snug mt-0.5">
-                {hospital.name}
-              </h3>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 py-2 border-y border-slate-100">
-              <div>
-                <div className="text-[11px] text-slate-500">จำนวนเคสสะสม</div>
-                <div
-                  className="text-base font-bold font-mono tabular-nums"
-                  style={{ color: density.color }}
-                >
-                  {hospital.caseCount.toLocaleString('th-TH')} เคส
-                </div>
-              </div>
-              <div>
-                <div className="text-[11px] text-slate-500">ยอดขายสะสม</div>
-                <div className="text-sm font-bold font-mono tabular-nums text-slate-900 mt-0.5">
-                  {formatCurrency(hospital.totalRevenue)}
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-1 text-xs text-slate-600">
-              <div>
-                <span className="text-slate-400">ระดับความหนาแน่น:</span>{' '}
-                <span className="font-semibold" style={{ color: density.color }}>
-                  {density.tierCode}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-400">สถานะ:</span>{' '}
-                <span className="text-slate-800">
-                  {HOSPITAL_STATUS_LABEL[hospital.status]}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-400">ผู้ดูแล:</span>{' '}
-                <span className="text-slate-800">{hospital.ownerName}</span>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => onAddDeal(hospital)}
-              className="w-full py-2 px-3 rounded-lg bg-[#FF5E1E] hover:bg-[#E04B10] text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              เพิ่มเคส / สร้างดีลใหม่
-            </button>
-          </div>
-        </InfoWindow>
-      )}
-    </>
-  );
+const HOSPITAL_TYPE_COLORS: Record<HospitalType, string> = {
+  โรงเรียนแพทย์: '#FF5E1E',
+  โรงพยาบาลรัฐ: '#38BDF8',
+  โรงพยาบาลเอกชน: '#FFAA00',
+  คลินิกเฉพาะทาง: '#34D399',
 };
 
-interface MapViewportControllerProps {
-  target: { lat: number; lng: number; zoom?: number } | null;
-}
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 8.5;
 
-const MapViewportController: React.FC<MapViewportControllerProps> = ({ target }) => {
-  const map = useMap();
-
-  useEffect(() => {
-    if (!map || !target) return;
-    map.panTo({ lat: target.lat, lng: target.lng });
-    if (target.zoom) {
-      map.setZoom(target.zoom);
-    }
-  }, [map, target]);
-
-  return null;
-};
-
-type LoadedPlacesLib = ReturnType<typeof useMapsLibrary<'places'>>;
-
-interface PlacesLibraryBridgeProps {
-  onLoaded: (lib: LoadedPlacesLib) => void;
-}
-
-const PlacesLibraryBridge: React.FC<PlacesLibraryBridgeProps> = ({ onLoaded }) => {
-  const placesLib = useMapsLibrary('places');
-
-  useEffect(() => {
-    onLoaded(placesLib);
-  }, [placesLib, onLoaded]);
-
-  return null;
-};
-
-const QUICK_SEARCH_REGIONS = [
-  { label: 'กรุงเทพฯ', query: 'โรงพยาบาล กรุงเทพมหานคร' },
-  { label: 'เชียงใหม่', query: 'โรงพยาบาล เชียงใหม่' },
-  { label: 'ขอนแก่น', query: 'โรงพยาบาล ขอนแก่น' },
-  { label: 'ชลบุรี', query: 'โรงพยาบาล ชลบุรี' },
-  { label: 'ภูเก็ต', query: 'โรงพยาบาล ภูเก็ต' },
-  { label: 'สงขลา', query: 'โรงพยาบาล สงขลา' },
-];
-
-function getMapsErrorMessage(code: string | null | undefined): string | null {
-  if (!code) return null;
-  switch (code) {
-    case 'OverQuotaMapError':
-      return 'โควตาการใช้งานฟรีรายวันของ Google Maps เต็มแล้ว กรุณารอรีเซ็ตวันถัดไป หรือเปลี่ยนไปใช้โปรเจกต์ Google Cloud ของคุณในเมนูตั้งค่า Google Maps';
-    case 'RefererNotAllowedMapError':
-      return 'โดเมนของเว็บนี้ยังไม่ได้รับอนุญาตใน HTTP Referrer Restriction ของ Google Maps API Key';
-    case 'ApiNotActivatedMapError':
-      return 'ยังไม่ได้เปิดใช้งาน Maps JavaScript API ในโปรเจกต์ Google Cloud ของคีย์นี้';
-    case 'BillingNotEnabledMapError':
-      return 'โปรเจกต์ Google Cloud ยังไม่ได้ผูกบัญชี Billing สำหรับ Google Maps Platform';
-    case 'InvalidKeyMapError':
-    case 'gm_authFailure':
-      return 'การยืนยันตัวตน Google Maps API Key ไม่สำเร็จ (อาจเกินโควตาหรือคีย์ไม่รองรับโดเมนนี้)';
-    default:
-      return 'ไม่สามารถโหลดแผนที่ Google Maps ได้ในขณะนี้ กรุณารีเฟรชหน้าเว็บหรือตรวจสอบการเชื่อมต่ออินเทอร์เน็ต';
-  }
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
 }
 
 export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
   hospitals,
+  officeCases,
   currentUser,
   focusedHospitalId,
-  hasMapsKey,
-  mapsErrorCode,
   onSelectAddDeal,
   onSelectAddHospital,
   onNotifyToast,
 }) => {
-  const [placesLib, setPlacesLib] = useState<LoadedPlacesLib>(null);
-  const [viewMode, setViewMode] = useState<'density' | 'status'>('density');
+  // Visual & filter states
+  const [viewMode, setViewMode] = useState<'density' | 'type'>('density');
+  const [scopeMode, setScopeMode] = useState<'nationwide' | 'active_only'>('nationwide');
   const [densityFilter, setDensityFilter] = useState<'all' | DensityLevel>('all');
-  const [selectedHospitalId, setSelectedHospitalId] = useState<string | null>(
-    focusedHospitalId
-  );
-  const [cameraTarget, setCameraTarget] = useState<{
-    lat: number;
-    lng: number;
-    zoom?: number;
-  } | null>(null);
-
+  const [regionFilter, setRegionFilter] = useState<'all' | RegionName>('all');
+  const [selectedProvinceName, setSelectedProvinceName] = useState<string | null>(null);
+  const [hoveredProvinceName, setHoveredProvinceName] = useState<string | null>(null);
+  const [selectedHospitalId, setSelectedHospitalId] = useState<string | null>(focusedHospitalId);
+  const [hoveredHospitalId, setHoveredHospitalId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchingPlaces, setSearchingPlaces] = useState(false);
-  const [syncingCtecRefs, setSyncingCtecRefs] = useState(false);
-  const [discoveredPlaces, setDiscoveredPlaces] = useState<DiscoveredHospital[]>([]);
-  const [importingId, setImportingId] = useState<string | null>(null);
+  const [sideTab, setSideTab] = useState<'hospitals' | 'provinces'>('hospitals');
 
+  // Import states
+  const [importingRegion, setImportingRegion] = useState(false);
+  const [importingSingleId, setImportingSingleId] = useState<string | null>(null);
+
+  // Interactive SVG camera (center cx, cy in viewBox space + zoom factor)
+  const [camera, setCamera] = useState<{ cx: number; cy: number; zoom: number }>({
+    cx: REGION_CAMERA_PRESETS.all.cx,
+    cy: REGION_CAMERA_PRESETS.all.cy,
+    zoom: REGION_CAMERA_PRESETS.all.zoom,
+  });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef<{
+    clientX: number;
+    clientY: number;
+    startCx: number;
+    startCy: number;
+  } | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  // Aggregate live Office Cases by normalized hospital name & matched catalog ID
+  const officeCasesByHospital = useMemo(() => {
+    const byCatalogId: Record<string, { count: number; revenue: number }> = {};
+    const byNormName: Record<string, { count: number; revenue: number }> = {};
+
+    for (const oc of officeCases) {
+      const rawName = (oc.hospitalName || '').trim();
+      if (!rawName) continue;
+      const rev = Number.isFinite(oc.price) ? Math.max(0, oc.price) : 0;
+      const norm = normalizeHospitalNameKey(rawName);
+      if (norm) {
+        if (!byNormName[norm]) byNormName[norm] = { count: 0, revenue: 0 };
+        byNormName[norm].count += 1;
+        byNormName[norm].revenue += rev;
+      }
+      const matched = matchCatalogHospitalByName(rawName);
+      if (matched) {
+        if (!byCatalogId[matched.id]) byCatalogId[matched.id] = { count: 0, revenue: 0 };
+        byCatalogId[matched.id].count += 1;
+        byCatalogId[matched.id].revenue += rev;
+      }
+    }
+    return { byCatalogId, byNormName };
+  }, [officeCases]);
+
+  // Merge Firestore CRM Hospitals + Live Office Cases + Nationwide 156-Hospital Offline Catalog
+  const unifiedHospitals: UnifiedMapHospital[] = useMemo(() => {
+    const matchedCatalogIds = new Set<string>();
+    const list: UnifiedMapHospital[] = [];
+
+    // 1. All Firestore CRM Hospitals first
+    for (const h of hospitals) {
+      const catalogMatch =
+        THAILAND_HOSPITALS_CATALOG.find((c) => c.id === h.placeId) ||
+        matchCatalogHospitalByName(h.name);
+
+      if (catalogMatch) {
+        matchedCatalogIds.add(catalogMatch.id);
+      }
+
+      const validLat =
+        typeof h.lat === 'number' && Number.isFinite(h.lat) && h.lat >= 5 && h.lat <= 21
+          ? h.lat
+          : catalogMatch?.lat ?? 13.7563;
+      const validLng =
+        typeof h.lng === 'number' && Number.isFinite(h.lng) && h.lng >= 97 && h.lng <= 106
+          ? h.lng
+          : catalogMatch?.lng ?? 100.5018;
+      const { x, y } = projectThailandLatLng(validLat, validLng);
+
+      const norm = normalizeHospitalNameKey(h.name);
+      const officeStat =
+        (catalogMatch && officeCasesByHospital.byCatalogId[catalogMatch.id]) ||
+        (norm && officeCasesByHospital.byNormName[norm]) ||
+        null;
+
+      const officeCount = officeStat?.count || 0;
+      const officeRev = officeStat?.revenue || 0;
+      const crmCases = h.caseCount || 0;
+      const totalCases = crmCases + officeCount;
+
+      list.push({
+        id: h.id,
+        catalogId: catalogMatch?.id,
+        crmHospital: h,
+        inCrm: true,
+        name: h.name,
+        address: h.address || catalogMatch?.address || '',
+        province: h.province || catalogMatch?.province || 'ประเทศไทย',
+        region: h.region || catalogMatch?.region || 'ภาคกลาง',
+        hospitalType: h.hospitalType || catalogMatch?.hospitalType || 'โรงพยาบาลรัฐ',
+        lat: validLat,
+        lng: validLng,
+        x,
+        y,
+        crmCases,
+        officeCasesCount: officeCount,
+        totalCases,
+        totalRevenue: (h.totalRevenue || 0) + officeRev,
+        status: h.status,
+        ownerName: h.ownerName || 'ทีม CTEC',
+        isCtecReference: catalogMatch?.isCtecReference,
+      });
+    }
+
+    // 2. Remaining Nationwide Offline Catalog Hospitals (all 77 provinces)
+    for (const item of THAILAND_HOSPITALS_CATALOG) {
+      if (matchedCatalogIds.has(item.id)) continue;
+      const { x, y } = projectThailandLatLng(item.lat, item.lng);
+      const officeStat = officeCasesByHospital.byCatalogId[item.id];
+      const officeCount = officeStat?.count || 0;
+      const officeRev = officeStat?.revenue || 0;
+
+      list.push({
+        id: item.id,
+        catalogId: item.id,
+        inCrm: false,
+        name: item.name,
+        address: item.address,
+        province: item.province,
+        region: item.region,
+        hospitalType: item.hospitalType,
+        lat: item.lat,
+        lng: item.lng,
+        x,
+        y,
+        crmCases: 0,
+        officeCasesCount: officeCount,
+        totalCases: officeCount,
+        totalRevenue: officeRev,
+        status: officeCount >= 30 ? 'high_priority' : officeCount > 0 ? 'active' : 'prospect',
+        ownerName: 'ฐานข้อมูล รพ.ทั่วประเทศ',
+        isCtecReference: item.isCtecReference,
+      });
+    }
+
+    return list.sort((a, b) => {
+      if (b.totalCases !== a.totalCases) return b.totalCases - a.totalCases;
+      if (a.inCrm !== b.inCrm) return a.inCrm ? -1 : 1;
+      return a.name.localeCompare(b.name, 'th');
+    });
+  }, [hospitals, officeCasesByHospital]);
+
+  // Focus hospital passed from Dashboard / Pipeline view
   useEffect(() => {
     if (!focusedHospitalId) return;
-    const found = hospitals.find((h) => h.id === focusedHospitalId);
+    const found = unifiedHospitals.find((h) => h.id === focusedHospitalId);
     if (found) {
       setSelectedHospitalId(found.id);
-      setCameraTarget({ lat: found.lat, lng: found.lng, zoom: 13 });
+      setCamera({ cx: found.x, cy: found.y, zoom: 4.2 });
     }
-  }, [focusedHospitalId, hospitals]);
+  }, [focusedHospitalId, unifiedHospitals]);
 
+  // Province-level heat aggregation (for 77-province choropleth glow & stats)
+  const provinceStatsMap = useMemo(() => {
+    const map: Record<
+      string,
+      { hospitalCount: number; crmCount: number; totalCases: number; totalRevenue: number }
+    > = {};
+
+    for (const p of THAILAND_PROVINCES) {
+      map[p.nameTh] = { hospitalCount: 0, crmCount: 0, totalCases: 0, totalRevenue: 0 };
+    }
+
+    for (const h of unifiedHospitals) {
+      const key = h.province;
+      if (!map[key]) {
+        map[key] = { hospitalCount: 0, crmCount: 0, totalCases: 0, totalRevenue: 0 };
+      }
+      map[key].hospitalCount += 1;
+      if (h.inCrm) map[key].crmCount += 1;
+      map[key].totalCases += h.totalCases;
+      map[key].totalRevenue += h.totalRevenue;
+    }
+
+    return map;
+  }, [unifiedHospitals]);
+
+  const maxProvinceCases = useMemo(() => {
+    let max = 1;
+    for (const stat of Object.values(provinceStatsMap)) {
+      if (stat.totalCases > max) max = stat.totalCases;
+    }
+    return max;
+  }, [provinceStatsMap]);
+
+  // Filtered hospitals for both Map markers and Right Panel ranking
   const filteredHospitals = useMemo(() => {
-    return hospitals
-      .filter((h) => {
-        if (densityFilter === 'all') return true;
-        return getDensityLevel(h.caseCount) === densityFilter;
-      })
-      .sort((a, b) => b.caseCount - a.caseCount);
-  }, [hospitals, densityFilter]);
+    const q = searchQuery.trim().toLowerCase();
+    const normQ = normalizeHospitalNameKey(q);
 
-  const mappableHospitals = useMemo(() => {
-    return filteredHospitals.filter(
-      (h) =>
-        typeof h.lat === 'number' &&
-        typeof h.lng === 'number' &&
-        Number.isFinite(h.lat) &&
-        Number.isFinite(h.lng) &&
-        !(h.lat === 0 && h.lng === 0)
-    );
-  }, [filteredHospitals]);
-
-  const mapDiagnosticMessage = getMapsErrorMessage(mapsErrorCode);
-
-  const existingPlaceIds = useMemo(() => {
-    const lookup: Record<string, boolean> = {};
-    hospitals.forEach((h) => {
-      if (h.placeId) lookup[h.placeId] = true;
+    return unifiedHospitals.filter((h) => {
+      if (scopeMode === 'active_only' && !h.inCrm && h.totalCases === 0) return false;
+      if (regionFilter !== 'all' && h.region !== regionFilter) return false;
+      if (selectedProvinceName && h.province !== selectedProvinceName) return false;
+      if (densityFilter !== 'all' && getDensityLevel(h.totalCases) !== densityFilter) {
+        return false;
+      }
+      if (q) {
+        const hitName = h.name.toLowerCase().includes(q);
+        const hitProv = h.province.toLowerCase().includes(q);
+        const hitRegion = h.region.toLowerCase().includes(q);
+        const hitType = h.hospitalType.toLowerCase().includes(q);
+        const hitNorm = normQ.length >= 2 && normalizeHospitalNameKey(h.name).includes(normQ);
+        if (!hitName && !hitProv && !hitRegion && !hitType && !hitNorm) return false;
+      }
+      return true;
     });
-    return lookup;
-  }, [hospitals]);
+  }, [unifiedHospitals, scopeMode, regionFilter, selectedProvinceName, densityFilter, searchQuery]);
 
-  const existingNames = useMemo(() => {
-    const lookup: Record<string, boolean> = {};
-    hospitals.forEach((h) => {
-      lookup[h.name.toLowerCase()] = true;
-    });
-    return lookup;
-  }, [hospitals]);
+  // Summary metrics
+  const kpiStats = useMemo(() => {
+    let totalCases = 0;
+    let activeWithCases = 0;
+    let highDensity = 0;
+    let mediumDensity = 0;
+    let lowDensity = 0;
+    let crmTotal = 0;
+    const provincesWithCases = new Set<string>();
 
-  // Resolve CTEC Reference Hotspots live through Google Maps Places API (New) and import to Firestore
-  const handleSyncCtecReferenceHospitals = useCallback(async () => {
-    if (!placesLib) {
-      onNotifyToast('กำลังโหลด Google Maps Places Library กรุณารอสักครู่');
-      return;
+    for (const h of unifiedHospitals) {
+      totalCases += h.totalCases;
+      if (h.inCrm) crmTotal += 1;
+      if (h.totalCases > 0) {
+        activeWithCases += 1;
+        provincesWithCases.add(h.province);
+      }
+      const lvl = getDensityLevel(h.totalCases);
+      if (lvl === 'high') highDensity += 1;
+      else if (lvl === 'medium') mediumDensity += 1;
+      else if (lvl === 'low') lowDensity += 1;
     }
-    setSyncingCtecRefs(true);
-    let importedCount = 0;
 
-    try {
-      for (const refHosp of CTEC_REFERENCE_HOTSPOTS) {
-        if (existingNames[refHosp.name.toLowerCase()]) continue;
+    let topProvince = 'กรุงเทพมหานคร';
+    let topProvinceCases = 0;
+    for (const [prov, stat] of Object.entries(provinceStatsMap)) {
+      if (stat.totalCases > topProvinceCases) {
+        topProvinceCases = stat.totalCases;
+        topProvince = prov;
+      }
+    }
 
-        const res = await placesLib.Place.searchByText({
-          textQuery: refHosp.searchQuery,
-          fields: ['id', 'displayName', 'formattedAddress', 'location'],
-          includedType: 'hospital',
-          language: 'th',
-          region: 'TH',
-          maxResultCount: 1,
-        });
+    return {
+      totalCatalog: unifiedHospitals.length,
+      crmTotal,
+      totalCases,
+      activeWithCases,
+      highDensity,
+      mediumDensity,
+      lowDensity,
+      provincesWithCases: provincesWithCases.size,
+      topProvince,
+      topProvinceCases,
+    };
+  }, [unifiedHospitals, provinceStatsMap]);
 
-        const placesList = (res.places || []) as google.maps.places.Place[];
-        const top = placesList[0];
-        if (!top?.location) continue;
-        if (top.id && existingPlaceIds[top.id]) continue;
+  const rankedProvinces = useMemo(() => {
+    return THAILAND_PROVINCES.map((p) => {
+      const stat = provinceStatsMap[p.nameTh] || {
+        hospitalCount: 0,
+        crmCount: 0,
+        totalCases: 0,
+        totalRevenue: 0,
+      };
+      return { ...p, ...stat };
+    })
+      .filter((p) => regionFilter === 'all' || p.region === regionFilter)
+      .sort((a, b) => {
+        if (b.totalCases !== a.totalCases) return b.totalCases - a.totalCases;
+        if (b.hospitalCount !== a.hospitalCount) return b.hospitalCount - a.hospitalCount;
+        return a.nameTh.localeCompare(b.nameTh, 'th');
+      });
+  }, [provinceStatsMap, regionFilter]);
 
-        await createHospital(
+  const selectedHospital = useMemo(
+    () => unifiedHospitals.find((h) => h.id === selectedHospitalId) || null,
+    [unifiedHospitals, selectedHospitalId]
+  );
+
+  const hoveredHospital = useMemo(
+    () => unifiedHospitals.find((h) => h.id === hoveredHospitalId) || null,
+    [unifiedHospitals, hoveredHospitalId]
+  );
+
+  // Compute SVG viewBox string from camera
+  const viewBoxString = useMemo(() => {
+    const vbW = THAILAND_MAP_VIEWBOX.width / camera.zoom;
+    const vbH = THAILAND_MAP_VIEWBOX.height / camera.zoom;
+    const x = clamp(camera.cx - vbW / 2, -60, THAILAND_MAP_VIEWBOX.width - vbW + 60);
+    const y = clamp(camera.cy - vbH / 2, -60, THAILAND_MAP_VIEWBOX.height - vbH + 60);
+    return `${x.toFixed(1)} ${y.toFixed(1)} ${vbW.toFixed(1)} ${vbH.toFixed(1)}`;
+  }, [camera]);
+
+  // Camera controls
+  const handleSelectRegion = useCallback((region: 'all' | RegionName) => {
+    setRegionFilter(region);
+    setSelectedProvinceName(null);
+    const preset = REGION_CAMERA_PRESETS[region];
+    setCamera({ cx: preset.cx, cy: preset.cy, zoom: preset.zoom });
+  }, []);
+
+  const handleFocusProvince = useCallback((prov: ThailandProvinceShape) => {
+    setSelectedProvinceName((prev) => (prev === prov.nameTh ? null : prov.nameTh));
+    setSelectedHospitalId(null);
+    setCamera({
+      cx: prov.cx,
+      cy: prov.cy,
+      zoom: prov.region === 'กรุงเทพและปริมณฑล' ? 5.6 : 3.4,
+    });
+  }, []);
+
+  const handleFocusHospital = useCallback((h: UnifiedMapHospital) => {
+    setSelectedHospitalId(h.id);
+    setCamera((prev) => ({
+      cx: h.x,
+      cy: h.y,
+      zoom: Math.max(prev.zoom, h.region === 'กรุงเทพและปริมณฑล' ? 5.2 : 3.2),
+    }));
+  }, []);
+
+  const handleZoomBy = useCallback((factor: number) => {
+    setCamera((prev) => ({
+      ...prev,
+      zoom: clamp(prev.zoom * factor, MIN_ZOOM, MAX_ZOOM),
+    }));
+  }, []);
+
+  const handleResetCamera = useCallback(() => {
+    setRegionFilter('all');
+    setSelectedProvinceName(null);
+    setSelectedHospitalId(null);
+    setCamera({
+      cx: REGION_CAMERA_PRESETS.all.cx,
+      cy: REGION_CAMERA_PRESETS.all.cy,
+      zoom: REGION_CAMERA_PRESETS.all.zoom,
+    });
+  }, []);
+
+  const handleWheel = useCallback((e: React.WheelEvent<SVGSVGElement>) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.18 : 0.85;
+    setCamera((prev) => ({
+      ...prev,
+      zoom: clamp(prev.zoom * factor, MIN_ZOOM, MAX_ZOOM),
+    }));
+  }, []);
+
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<SVGSVGElement>) => {
+      if ((e.target as HTMLElement).closest('[data-map-interactive="true"]')) return;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setIsDragging(true);
+      dragStartRef.current = {
+        clientX: e.clientX,
+        clientY: e.clientY,
+        startCx: camera.cx,
+        startCy: camera.cy,
+      };
+    },
+    [camera.cx, camera.cy]
+  );
+
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent<SVGSVGElement>) => {
+      if (!isDragging || !dragStartRef.current || !svgRef.current) return;
+      const rect = svgRef.current.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+
+      const vbW = THAILAND_MAP_VIEWBOX.width / camera.zoom;
+      const vbH = THAILAND_MAP_VIEWBOX.height / camera.zoom;
+      const scale = Math.max(vbW / rect.width, vbH / rect.height);
+      const dx = (e.clientX - dragStartRef.current.clientX) * scale;
+      const dy = (e.clientY - dragStartRef.current.clientY) * scale;
+
+      setCamera((prev) => ({
+        ...prev,
+        cx: clamp(dragStartRef.current!.startCx - dx, 40, THAILAND_MAP_VIEWBOX.width - 40),
+        cy: clamp(dragStartRef.current!.startCy - dy, 40, THAILAND_MAP_VIEWBOX.height - 40),
+      }));
+    },
+    [isDragging, camera.zoom]
+  );
+
+  const handlePointerUp = useCallback(() => {
+    setIsDragging(false);
+    dragStartRef.current = null;
+  }, []);
+
+  // Offline 1-click import: Single catalog hospital into Firestore CRM (strictly real live counts only)
+  const handleImportSingleHospital = useCallback(
+    async (item: UnifiedMapHospital) => {
+      if (item.inCrm) return;
+      setImportingSingleId(item.id);
+      try {
+        const createdId = await createHospital(
           {
-            name: refHosp.name,
-            placeId: top.id || '',
-            address: top.formattedAddress || refHosp.province,
-            province: refHosp.province,
-            region: refHosp.region,
-            lat: top.location.lat(),
-            lng: top.location.lng(),
-            hospitalType: refHosp.hospitalType,
-            caseCount: refHosp.cases,
-            totalRevenue: refHosp.revenue,
-            activeDealsCount: Math.max(2, Math.round(refHosp.cases / 25)),
-            status: 'high_priority',
-            contactName: 'หัวหน้าศูนย์อุปกรณ์ผ่าตัด',
-            contactRole: refHosp.specialty,
+            name: item.name,
+            placeId: item.catalogId || item.id,
+            address: item.address || item.province,
+            province: item.province,
+            region: item.region,
+            lat: item.lat,
+            lng: item.lng,
+            hospitalType: item.hospitalType,
+            caseCount: item.officeCasesCount || 0,
+            totalRevenue: item.totalRevenue || 0,
+            activeDealsCount: item.officeCasesCount > 0 ? 1 : 0,
+            status: item.totalCases >= 30 ? 'high_priority' : item.totalCases > 0 ? 'active' : 'prospect',
+            contactName: '',
+            contactRole: 'ฝ่ายจัดซื้อเครื่องมือแพทย์',
             contactPhone: '',
-            notes: `นำเข้าจากชุดข้อมูลอ้างอิง CTEC (${refHosp.specialty}) พร้อมพิกัดจริงจาก Google Maps`,
+            notes: 'นำเข้าจากฐานข้อมูลโรงพยาบาลทั่วประเทศ (แผนที่ออฟไลน์)',
           },
           currentUser
         );
-        importedCount += 1;
-      }
-
-      if (importedCount > 0) {
-        onNotifyToast(
-          `นำเข้าโรงพยาบาลอ้างอิง CTEC จำนวน ${importedCount} แห่งพร้อมพิกัดจริงจาก Google Maps แล้ว`
-        );
-      } else {
-        onNotifyToast('โรงพยาบาลอ้างอิง CTEC ทั้งหมดถูกนำเข้าในฐานข้อมูลแล้ว');
-      }
-    } catch (err) {
-      const msg = String(err);
-      if (
-        msg.includes('RESOURCE_EXHAUSTED') ||
-        msg.includes('OVER_QUERY_LIMIT') ||
-        msg.includes('429')
-      ) {
-        window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-      }
-      onNotifyToast('ไม่สามารถดึงพิกัดโรงพยาบาลอ้างอิงจาก Google Maps ได้ในขณะนี้');
-    } finally {
-      setSyncingCtecRefs(false);
-    }
-  }, [placesLib, existingNames, existingPlaceIds, currentUser, onNotifyToast]);
-
-  const handleDiscoverHospitals = useCallback(
-    async (queryText: string) => {
-      if (!placesLib || !queryText.trim()) return;
-      setSearchingPlaces(true);
-      try {
-        let res = await placesLib.Place.searchByText({
-          textQuery: queryText.trim(),
-          fields: ['id', 'displayName', 'formattedAddress', 'location'],
-          includedType: 'hospital',
-          language: 'th',
-          region: 'TH',
-          maxResultCount: 10,
-        });
-
-        let placesList = (res.places || []) as google.maps.places.Place[];
-        if (placesList.length === 0) {
-          res = await placesLib.Place.searchByText({
-            textQuery: queryText.trim(),
-            fields: ['id', 'displayName', 'formattedAddress', 'location'],
-            language: 'th',
-            region: 'TH',
-            maxResultCount: 10,
-          });
-          placesList = (res.places || []) as google.maps.places.Place[];
-        }
-
-        const results: DiscoveredHospital[] = placesList
-          .filter((p) => Boolean(p.location && p.displayName))
-          .map((p) => ({
-            placeId: p.id || '',
-            name: p.displayName || '',
-            address: p.formattedAddress || '',
-            lat: p.location!.lat(),
-            lng: p.location!.lng(),
-            phone: '',
-          }));
-
-        setDiscoveredPlaces(results);
-        if (results.length > 0) {
-          setCameraTarget({ lat: results[0].lat, lng: results[0].lng, zoom: 11 });
-          onNotifyToast(`พบโรงพยาบาลจริงจาก Google Maps จำนวน ${results.length} แห่ง`);
-        } else {
-          onNotifyToast('ไม่พบโรงพยาบาลตามคำค้นหา ลองเปลี่ยนชื่อจังหวัดหรือเขตพื้นที่');
-        }
+        setSelectedHospitalId(createdId);
+        onNotifyToast(`นำเข้า "${item.name}" เข้าสู่ระบบ CRM เรียบร้อยแล้ว`);
       } catch (err) {
-        const msg = String(err);
-        if (
-          msg.includes('RESOURCE_EXHAUSTED') ||
-          msg.includes('OVER_QUERY_LIMIT') ||
-          msg.includes('429')
-        ) {
-          window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-        }
-        onNotifyToast('ไม่สามารถค้นหาโรงพยาบาลจาก Google Maps ได้ในขณะนี้');
+        onNotifyToast(getFriendlyFirestoreError(err, `ไม่สามารถนำเข้า "${item.name}" ได้`));
       } finally {
-        setSearchingPlaces(false);
+        setImportingSingleId(null);
       }
     },
-    [placesLib, onNotifyToast]
+    [currentUser, onNotifyToast]
   );
 
-  const handleImportDiscovered = async (item: DiscoveredHospital) => {
-    setImportingId(item.placeId);
-    try {
-      const { province, region } = inferProvinceAndRegion(item.address);
-      const inferredType: HospitalType =
-        item.name.includes('ศิริราช') ||
-        item.name.includes('จุฬาลงกรณ์') ||
-        item.name.includes('รามาธิบดี') ||
-        item.name.includes('มหาวิทยาลัย')
-          ? 'โรงเรียนแพทย์'
-          : item.name.includes('เอกชน') ||
-              item.name.includes('บำรุงราษฎร์') ||
-              item.name.includes('กรุงเทพ') ||
-              item.name.includes('สมิติเวช') ||
-              item.name.includes('พญาไท')
-            ? 'โรงพยาบาลเอกชน'
-            : 'โรงพยาบาลรัฐ';
-
-      await createHospital(
-        {
-          name: item.name,
-          placeId: item.placeId,
-          address: item.address,
-          province,
-          region,
-          lat: item.lat,
-          lng: item.lng,
-          hospitalType: inferredType,
-          caseCount: 0,
-          totalRevenue: 0,
-          activeDealsCount: 0,
-          status: 'prospect',
-          contactName: '',
-          contactRole: 'ฝ่ายจัดซื้อเครื่องมือแพทย์',
-          contactPhone: item.phone,
-          notes: 'นำเข้าพิกัดจริงจาก Google Maps Platform',
-        },
-        currentUser
-      );
-      onNotifyToast(`นำเข้า "${item.name}" เข้าสู่ระบบ CRM เรียบร้อยแล้ว`);
-    } catch (err) {
-      onNotifyToast(getFriendlyFirestoreError(err, `ไม่สามารถนำเข้า "${item.name}" ได้`));
-    } finally {
-      setImportingId(null);
+  // Batch import hospitals for the currently selected region (or provincial hubs)
+  const handleBatchImportFilteredToCrm = useCallback(async () => {
+    const candidates = filteredHospitals.filter((h) => !h.inCrm).slice(0, 20);
+    if (candidates.length === 0) {
+      onNotifyToast('โรงพยาบาลในตัวกรองปัจจุบันถูกนำเข้าสู่ระบบ CRM ครบแล้ว');
+      return;
     }
+    setImportingRegion(true);
+    let imported = 0;
+    try {
+      for (const item of candidates) {
+        await createHospital(
+          {
+            name: item.name,
+            placeId: item.catalogId || item.id,
+            address: item.address || item.province,
+            province: item.province,
+            region: item.region,
+            lat: item.lat,
+            lng: item.lng,
+            hospitalType: item.hospitalType,
+            caseCount: item.officeCasesCount || 0,
+            totalRevenue: item.totalRevenue || 0,
+            activeDealsCount: item.officeCasesCount > 0 ? 1 : 0,
+            status: item.officeCasesCount >= 30 ? 'high_priority' : item.officeCasesCount > 0 ? 'active' : 'prospect',
+            contactName: '',
+            contactRole: 'ฝ่ายจัดซื้อเครื่องมือแพทย์',
+            contactPhone: '',
+            notes: 'นำเข้าแบบกลุ่มจากฐานข้อมูลโรงพยาบาลทั่วประเทศ',
+          },
+          currentUser
+        );
+        imported += 1;
+      }
+      onNotifyToast(`นำเข้าโรงพยาบาลจำนวน ${imported} แห่งเข้าสู่ระบบ CRM เรียบร้อยแล้ว`);
+    } catch (err) {
+      onNotifyToast(getFriendlyFirestoreError(err, `นำเข้าได้ ${imported} แห่ง ก่อนพบข้อผิดพลาด`));
+    } finally {
+      setImportingRegion(false);
+    }
+  }, [filteredHospitals, currentUser, onNotifyToast]);
+
+  // Province choropleth fill color based on case volume
+  const getProvinceFill = (provName: string, isSelected: boolean, isHovered: boolean): string => {
+    const stat = provinceStatsMap[provName];
+    const cases = stat?.totalCases || 0;
+    if (isSelected) return 'rgba(255, 94, 30, 0.34)';
+    if (cases > 0) {
+      const ratio = Math.min(1, Math.sqrt(cases / Math.max(maxProvinceCases, 20)));
+      const alpha = isHovered ? Math.min(0.46, 0.18 + ratio * 0.28) : 0.1 + ratio * 0.26;
+      if (cases >= 100) return `rgba(255, 94, 30, ${alpha.toFixed(2)})`;
+      if (cases >= 30) return `rgba(255, 148, 34, ${alpha.toFixed(2)})`;
+      return `rgba(255, 186, 73, ${alpha.toFixed(2)})`;
+    }
+    if (isHovered) return 'rgba(255, 255, 255, 0.11)';
+    return 'rgba(28, 35, 50, 0.78)';
   };
 
-  const densityCounts = useMemo(() => {
-    let high = 0;
-    let medium = 0;
-    let low = 0;
-    hospitals.forEach((h) => {
-      const lvl = getDensityLevel(h.caseCount);
-      if (lvl === 'high') high += 1;
-      else if (lvl === 'medium') medium += 1;
-      else if (lvl === 'low') low += 1;
+  // Sort markers so higher-case hotspots render on top
+  const renderOrderedHospitals = useMemo(() => {
+    return filteredHospitals.slice().sort((a, b) => {
+      if (a.id === selectedHospitalId) return 1;
+      if (b.id === selectedHospitalId) return -1;
+      return a.totalCases - b.totalCases;
     });
-    return { high, medium, low };
-  }, [hospitals]);
+  }, [filteredHospitals, selectedHospitalId]);
+
+  const invZoom = 1 / Math.pow(camera.zoom, 0.72);
+  const hoveredProvObj = hoveredProvinceName
+    ? THAILAND_PROVINCES.find((p) => p.nameTh === hoveredProvinceName) || null
+    : null;
+  const hoveredProvStat = hoveredProvinceName ? provinceStatsMap[hoveredProvinceName] : null;
 
   return (
     <div className="space-y-5">
-      {hasMapsKey && <PlacesLibraryBridge onLoaded={setPlacesLib} />}
-      {/* Header & Controls */}
+      {/* Header & Primary Controls */}
       <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-[#F4F6FB]">
-            แผนที่ติดตามสถานะและความหนาแน่นโรงพยาบาล
+        <div className="max-w-2xl">
+          <h1 className="text-2xl font-bold text-[#F4F6FB] tracking-tight">
+            แผนที่ความหนาแน่นเคสโรงพยาบาลทั่วประเทศไทย
           </h1>
           <p className="text-sm text-[#B5BDCB] mt-1">
-            โรงพยาบาลที่มีเคสผ่าตัดจำนวนมากจะแสดงรัศมีความหนาแน่นสีส้ม-ทองชัดเจน พร้อมค้นหาพิกัดจริงจาก Google Maps
+            แผนที่ออฟไลน์ 77 จังหวัด พร้อมฐานข้อมูลโรงพยาบาลทั่วประเทศ {kpiStats.totalCatalog} แห่ง ผสานยอดเคสจาก CRM และตารางเคสออฟฟิศอัตโนมัติ
           </p>
         </div>
 
@@ -566,7 +628,7 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
             <button
               type="button"
               onClick={() => setViewMode('density')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 viewMode === 'density'
                   ? 'bg-[#FF5E1E] text-white'
                   : 'text-[#B5BDCB] hover:text-white'
@@ -576,30 +638,16 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => setViewMode('status')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-                viewMode === 'status'
+              onClick={() => setViewMode('type')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                viewMode === 'type'
                   ? 'bg-[#FF5E1E] text-white'
                   : 'text-[#B5BDCB] hover:text-white'
               }`}
             >
-              โหมดสถานะลูกค้า
+              โหมดประเภท รพ.
             </button>
           </div>
-
-          <button
-            type="button"
-            disabled={syncingCtecRefs || !hasMapsKey}
-            onClick={() => void handleSyncCtecReferenceHospitals()}
-            className="btn-glass min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-          >
-            {syncingCtecRefs ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-[#FFCF90]" />
-            ) : (
-              <Sparkles className="w-3.5 h-3.5 text-[#FFCF90]" />
-            )}
-            {syncingCtecRefs ? 'กำลังดึงพิกัด...' : 'นำเข้า 5 รพ. อ้างอิง CTEC'}
-          </button>
 
           <button
             type="button"
@@ -612,135 +660,160 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
         </div>
       </div>
 
-      {/* Places API (New) Live Discovery Bar */}
+      {/* Top KPI Strip (Clean Single-Elevation Glass Tiles, Tabular Numerals) */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+        <div className="glass-panel rounded-2xl p-4">
+          <div className="text-xs text-[#B5BDCB]">ฐานข้อมูล รพ. บนแผนที่</div>
+          <div className="mt-1.5 text-2xl font-bold font-mono tabular-nums text-[#F4F6FB]">
+            {kpiStats.totalCatalog.toLocaleString('th-TH')}
+            <span className="text-xs font-sans font-normal text-[#8E97AB] ml-1.5">แห่ง</span>
+          </div>
+          <div className="mt-1 text-xs text-[#8E97AB]">
+            ครบ 77 จังหวัด · ใน CRM {kpiStats.crmTotal} แห่ง
+          </div>
+        </div>
+
+        <div className="glass-panel rounded-2xl p-4">
+          <div className="text-xs text-[#B5BDCB]">เคสสะสมรวมบนแผนที่</div>
+          <div className="mt-1.5 text-2xl font-bold font-mono tabular-nums text-[#FFCF90]">
+            {kpiStats.totalCases.toLocaleString('th-TH')}
+            <span className="text-xs font-sans font-normal text-[#8E97AB] ml-1.5">เคส</span>
+          </div>
+          <div className="mt-1 text-xs text-[#8E97AB]">
+            ครอบคลุม {kpiStats.activeWithCases} รพ. · {kpiStats.provincesWithCases} จังหวัด
+          </div>
+        </div>
+
+        <div className="glass-panel rounded-2xl p-4">
+          <div className="text-xs text-[#B5BDCB]">จุดความหนาแน่นสูง (30+ เคส)</div>
+          <div className="mt-1.5 text-2xl font-bold font-mono tabular-nums text-[#FFB59D]">
+            {kpiStats.highDensity.toLocaleString('th-TH')}
+            <span className="text-xs font-sans font-normal text-[#8E97AB] ml-1.5">แห่ง</span>
+          </div>
+          <div className="mt-1 text-xs text-[#8E97AB]">
+            ปานกลาง {kpiStats.mediumDensity} · ปกติ {kpiStats.lowDensity} แห่ง
+          </div>
+        </div>
+
+        <div className="glass-panel rounded-2xl p-4">
+          <div className="text-xs text-[#B5BDCB]">จังหวัดที่เคสหนาแน่นสูงสุด</div>
+          <div className="mt-1.5 text-lg font-bold text-[#F4F6FB] truncate">
+            {kpiStats.topProvinceCases > 0 ? kpiStats.topProvince : 'พร้อมบันทึกเคส'}
+          </div>
+          <div className="mt-1 text-xs font-mono tabular-nums text-[#FFCF90]">
+            {kpiStats.topProvinceCases > 0
+              ? `${kpiStats.topProvinceCases.toLocaleString('th-TH')} เคสสะสม`
+              : 'บันทึกเคสเพื่อแสดงความหนาแน่นบนแผนที่'}
+          </div>
+        </div>
+      </div>
+
+      {/* Instant Offline Search & Regional Quick-Focus Toolbar */}
       <div className="glass-panel rounded-2xl p-4 space-y-3">
-        <div className="flex flex-col sm:flex-row gap-2">
+        <div className="flex flex-col md:flex-row gap-2.5">
           <div className="relative flex-1">
-            <Search className="w-4 h-4 text-[#8E97AB] absolute left-3 top-1/2 -translate-y-1/2" />
+            <Search className="w-4 h-4 text-[#8E97AB] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  void handleDiscoverHospitals(searchQuery);
-                }
-              }}
-              placeholder="ค้นหาโรงพยาบาลจริงบน Google Maps เช่น โรงพยาบาลศิริราช, โรงพยาบาลเชียงใหม่..."
-              className="glass-input w-full h-10 pl-9 pr-3 text-sm rounded-xl placeholder:text-[#8E97AB]"
+              placeholder="ค้นหาชื่อโรงพยาบาล, จังหวัด, หรือประเภท เช่น ศิริราช, เชียงใหม่, ขอนแก่น, โรงเรียนแพทย์..."
+              className="glass-input w-full h-10 pl-10 pr-9 text-sm rounded-xl placeholder:text-[#8E97AB]"
             />
-          </div>
-          <button
-            type="button"
-            disabled={searchingPlaces || !searchQuery.trim() || !hasMapsKey}
-            onClick={() => void handleDiscoverHospitals(searchQuery)}
-            className="btn-luxury-orange min-h-[40px] px-4 py-2 text-xs font-semibold rounded-xl inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-          >
-            {searchingPlaces ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Search className="w-4 h-4" />
-            )}
-            ค้นหาจาก Google Maps
-          </button>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-[#8E97AB]">ค้นหาด่วนตามพื้นที่:</span>
-          {QUICK_SEARCH_REGIONS.map((r) => (
-            <button
-              key={r.label}
-              type="button"
-              disabled={searchingPlaces || !hasMapsKey}
-              onClick={() => {
-                setSearchQuery(r.query);
-                void handleDiscoverHospitals(r.query);
-              }}
-              className="px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-[#FF5E1E]/20 hover:text-[#FFB59D] text-[#DFE2EF] font-medium transition-colors whitespace-nowrap cursor-pointer disabled:opacity-50"
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
-
-        {discoveredPlaces.length > 0 && (
-          <div className="pt-3 border-t border-white/[0.08] space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-semibold text-[#FFCF90]">
-                ผลการค้นหาโรงพยาบาลจาก Google Maps ({discoveredPlaces.length} แห่ง)
-              </span>
+            {searchQuery && (
               <button
                 type="button"
-                onClick={() => setDiscoveredPlaces([])}
-                className="text-[#8E97AB] hover:text-white cursor-pointer"
+                onClick={() => setSearchQuery('')}
+                aria-label="ล้างคำค้นหา"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-[#8E97AB] hover:text-white cursor-pointer"
               >
-                ซ่อนรายการ
+                <X className="w-4 h-4" />
               </button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5 max-h-56 overflow-y-auto pr-1">
-              {discoveredPlaces.map((place) => {
-                const alreadyAdded = Boolean(existingPlaceIds[place.placeId]);
-                return (
-                  <div
-                    key={place.placeId}
-                    className="glass-tile rounded-xl p-3 flex items-start justify-between gap-2"
-                  >
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold text-[#F4F6FB] truncate">
-                        {place.name}
-                      </div>
-                      <div className="text-[11px] text-[#8E97AB] line-clamp-1 mt-0.5">
-                        {place.address}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={alreadyAdded || importingId === place.placeId}
-                      onClick={() => void handleImportDiscovered(place)}
-                      className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold whitespace-nowrap shrink-0 inline-flex items-center gap-1 cursor-pointer ${
-                        alreadyAdded
-                          ? 'bg-emerald-500/15 text-emerald-300 cursor-default'
-                          : 'bg-[#FF5E1E] hover:bg-[#FF7038] text-white'
-                      }`}
-                    >
-                      {alreadyAdded ? (
-                        'อยู่ใน CRM แล้ว'
-                      ) : importingId === place.placeId ? (
-                        'กำลังเพิ่ม...'
-                      ) : (
-                        <>
-                          <Download className="w-3 h-3" />
-                          นำเข้า CRM
-                        </>
-                      )}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
+            )}
           </div>
-        )}
+
+          <div className="inline-flex items-center p-1 rounded-xl bg-[#0A0E17]/80 border border-white/[0.08] shrink-0">
+            <button
+              type="button"
+              onClick={() => setScopeMode('nationwide')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+                scopeMode === 'nationwide'
+                  ? 'bg-[#262B38] text-[#FFB59D]'
+                  : 'text-[#8E97AB] hover:text-white'
+              }`}
+            >
+              ทั้งประเทศ ({unifiedHospitals.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setScopeMode('active_only')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+                scopeMode === 'active_only'
+                  ? 'bg-[#262B38] text-[#FFB59D]'
+                  : 'text-[#8E97AB] hover:text-white'
+              }`}
+            >
+              เฉพาะที่มีเคส / CRM ({kpiStats.crmTotal + unifiedHospitals.filter((h) => !h.inCrm && h.totalCases > 0).length})
+            </button>
+          </div>
+        </div>
+
+        {/* Regional Focus Controls */}
+        <div className="flex flex-wrap items-center justify-between gap-2.5 pt-1">
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="text-[#8E97AB] mr-1 inline-flex items-center gap-1">
+              <Compass className="w-3.5 h-3.5 text-[#FFCF90]" />
+              โฟกัสภูมิภาค:
+            </span>
+            {(['all', ...REGIONS] as const).map((r) => (
+              <button
+                key={r}
+                type="button"
+                onClick={() => handleSelectRegion(r)}
+                className={`px-2.5 py-1.5 rounded-lg font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  regionFilter === r
+                    ? 'bg-[#FF5E1E] text-white'
+                    : 'bg-white/[0.05] text-[#DFE2EF] hover:bg-white/[0.1]'
+                }`}
+              >
+                {REGION_CAMERA_PRESETS[r].label}
+              </button>
+            ))}
+          </div>
+
+          {selectedProvinceName && (
+            <button
+              type="button"
+              onClick={() => setSelectedProvinceName(null)}
+              className="text-xs text-[#FFB59D] hover:text-white inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
+            >
+              <span>จังหวัด: {selectedProvinceName}</span>
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Main Map + Side Density List */}
+      {/* Main Split: Interactive Offline Thailand Map + Ranked Side Panel */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-        {/* Interactive Map Container */}
+        {/* Left 8 Cols: Interactive Offline Vector Map */}
         <div className="lg:col-span-8 glass-panel rounded-2xl overflow-hidden flex flex-col">
-          <div className="px-4 py-3 border-b border-white/[0.08] flex flex-wrap items-center justify-between gap-3 bg-[#141822]/70">
+          {/* Map Top Filter & Legend Bar */}
+          <div className="px-4 py-3 border-b border-white/[0.08] flex flex-wrap items-center justify-between gap-3 bg-[#111622]/85">
             <div className="flex flex-wrap items-center gap-1.5">
               {(
                 [
-                  { key: 'all', label: `ทั้งหมด (${hospitals.length})` },
-                  { key: 'high', label: `หนาแน่นสูง 30+ (${densityCounts.high})` },
-                  { key: 'medium', label: `ปานกลาง 11–29 (${densityCounts.medium})` },
-                  { key: 'low', label: `ปกติ 1–10 (${densityCounts.low})` },
+                  { key: 'all', label: `ทั้งหมด (${filteredHospitals.length})` },
+                  { key: 'high', label: `หนาแน่นสูง 30+ (${kpiStats.highDensity})` },
+                  { key: 'medium', label: `ปานกลาง 11–29 (${kpiStats.mediumDensity})` },
+                  { key: 'low', label: `ปกติ 1–10 (${kpiStats.lowDensity})` },
                 ] as const
               ).map((item) => (
                 <button
                   key={item.key}
                   type="button"
                   onClick={() => setDensityFilter(item.key)}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+                  className={`px-2.5 py-1 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                     densityFilter === item.key
                       ? 'bg-[#FF5E1E] text-white'
                       : 'bg-white/[0.05] text-[#B5BDCB] hover:text-white'
@@ -751,175 +824,654 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
               ))}
             </div>
 
-            <div className="flex items-center gap-3 text-[11px] text-[#B5BDCB]">
-              <span className="inline-flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#FF5E1E] inline-block" />
-                วิกฤต 120+
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#FFAA00] inline-block" />
-                สูง 30+
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#EEC058] inline-block" />
-                ปานกลาง
-              </span>
-            </div>
+            {viewMode === 'density' ? (
+              <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#B5BDCB]">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#FF5E1E] inline-block" />
+                  วิกฤต 120+
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#FFAA00] inline-block" />
+                  สูง 30+
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#EEC058] inline-block" />
+                  ปานกลาง
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#34D399] inline-block" />
+                  1–10 เคส
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-[#64748B] inline-block" />
+                  รพ.เครือข่าย
+                </span>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#B5BDCB]">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#FF5E1E] inline-block" />
+                  โรงเรียนแพทย์
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#38BDF8] inline-block" />
+                  โรงพยาบาลรัฐ
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#FFAA00] inline-block" />
+                  โรงพยาบาลเอกชน
+                </span>
+              </div>
+            )}
           </div>
 
-          {mapDiagnosticMessage && (
-            <div className="px-4 py-2.5 bg-amber-500/15 border-b border-amber-400/30 text-xs text-amber-100 leading-relaxed">
-              {mapDiagnosticMessage}
-            </div>
-          )}
+          {/* Interactive SVG Map Canvas */}
+          <div className="relative w-full h-[500px] sm:h-[580px] lg:h-[640px] bg-[#080C15] select-none overflow-hidden">
+            {/* Subtle cartographic ambient ocean depth */}
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0"
+              style={{
+                background:
+                  'radial-gradient(circle at 46% 42%, rgba(255,94,30,0.08) 0%, rgba(16,24,40,0.2) 48%, rgba(8,12,21,0.95) 100%)',
+              }}
+            />
 
-          <div className="relative w-full h-[420px] sm:h-[520px] lg:h-[580px]">
-            {hasMapsKey ? (
-              <GoogleMap
-                mapId="DEMO_MAP_ID"
-                defaultCenter={{ lat: 13.7563, lng: 100.5018 }}
-                defaultZoom={6}
-                gestureHandling="greedy"
-                mapTypeControl={false}
-                streetViewControl={false}
-                fullscreenControl={true}
-                internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-                style={{ width: '100%', height: '100%' }}
-              >
-                <MapViewportController target={cameraTarget} />
+            <svg
+              ref={svgRef}
+              viewBox={viewBoxString}
+              onWheel={handleWheel}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              onPointerLeave={handlePointerUp}
+              className={`relative z-10 w-full h-full touch-none ${
+                isDragging ? 'cursor-grabbing' : 'cursor-grab'
+              }`}
+              role="img"
+              aria-label="แผนที่ประเทศไทย 77 จังหวัดแสดงความหนาแน่นเคสโรงพยาบาล"
+            >
+              <defs>
+                <radialGradient id="halo-critical">
+                  <stop offset="0%" stopColor="#FF5E1E" stopOpacity="0.72" />
+                  <stop offset="45%" stopColor="#FF5E1E" stopOpacity="0.28" />
+                  <stop offset="100%" stopColor="#FF5E1E" stopOpacity="0" />
+                </radialGradient>
+                <radialGradient id="halo-high">
+                  <stop offset="0%" stopColor="#FFAA00" stopOpacity="0.65" />
+                  <stop offset="50%" stopColor="#FFAA00" stopOpacity="0.22" />
+                  <stop offset="100%" stopColor="#FFAA00" stopOpacity="0" />
+                </radialGradient>
+                <radialGradient id="halo-medium">
+                  <stop offset="0%" stopColor="#EEC058" stopOpacity="0.55" />
+                  <stop offset="55%" stopColor="#EEC058" stopOpacity="0.16" />
+                  <stop offset="100%" stopColor="#EEC058" stopOpacity="0" />
+                </radialGradient>
+                <radialGradient id="halo-low">
+                  <stop offset="0%" stopColor="#34D399" stopOpacity="0.45" />
+                  <stop offset="55%" stopColor="#34D399" stopOpacity="0.12" />
+                  <stop offset="100%" stopColor="#34D399" stopOpacity="0" />
+                </radialGradient>
+                <filter id="soft-glow" x="-30%" y="-30%" width="160%" height="160%">
+                  <feGaussianBlur stdDeviation="2.5" result="blur" />
+                  <feMerge>
+                    <feMergeNode in="blur" />
+                    <feMergeNode in="SourceGraphic" />
+                  </feMerge>
+                </filter>
+              </defs>
 
-                {mappableHospitals.map((hospital) => (
-                  <HospitalDensityMarker
-                    key={hospital.id}
-                    hospital={hospital}
-                    viewMode={viewMode}
-                    isSelected={selectedHospitalId === hospital.id}
-                    onSelect={setSelectedHospitalId}
-                    onAddDeal={onSelectAddDeal}
-                  />
+              {/* Subtle Coordinate Graticule Grid */}
+              <g stroke="rgba(148,163,184,0.06)" strokeWidth={0.8 * invZoom}>
+                {[100, 200, 300, 400, 500, 600].map((gx) => (
+                  <line key={`vx-${gx}`} x1={gx} y1={-40} x2={gx} y2={1160} />
                 ))}
+                {[100, 250, 400, 550, 700, 850, 1000].map((gy) => (
+                  <line key={`hy-${gy}`} x1={-40} y1={gy} x2={680} y2={gy} />
+                ))}
+              </g>
 
-                {discoveredPlaces
-                  .filter((p) => !existingPlaceIds[p.placeId])
-                  .map((place) => (
-                    <AdvancedMarker
-                      key={`preview-${place.placeId}`}
-                      position={{ lat: place.lat, lng: place.lng }}
-                      title={`${place.name} (คลิกเพื่อนำเข้า CRM)`}
-                      onClick={() => void handleImportDiscovered(place)}
+              {/* 77 Provinces Choropleth Vector Layer */}
+              <g>
+                {THAILAND_PROVINCES.map((prov) => {
+                  const isSel = selectedProvinceName === prov.nameTh;
+                  const isHov = hoveredProvinceName === prov.nameTh;
+                  const inActiveRegion = regionFilter === 'all' || prov.region === regionFilter;
+                  const stat = provinceStatsMap[prov.nameTh];
+                  const hasCases = (stat?.totalCases || 0) > 0;
+
+                  return (
+                    <path
+                      key={prov.id}
+                      d={prov.d}
+                      data-map-interactive="true"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleFocusProvince(prov);
+                      }}
+                      onMouseEnter={() => setHoveredProvinceName(prov.nameTh)}
+                      onMouseLeave={() =>
+                        setHoveredProvinceName((prev) => (prev === prov.nameTh ? null : prev))
+                      }
+                      fill={getProvinceFill(prov.nameTh, isSel, isHov)}
+                      fillOpacity={inActiveRegion ? 1 : 0.35}
+                      stroke={
+                        isSel
+                          ? '#FF7A45'
+                          : isHov
+                            ? 'rgba(255,207,144,0.75)'
+                            : hasCases
+                              ? 'rgba(255,170,80,0.45)'
+                              : 'rgba(148,163,184,0.22)'
+                      }
+                      strokeWidth={(isSel ? 1.8 : isHov ? 1.3 : 0.75) * invZoom}
+                      className="transition-colors duration-150 cursor-pointer"
+                    />
+                  );
+                })}
+              </g>
+
+              {/* Province Name Labels (appear smoothly at zoomed levels or for major regional hubs) */}
+              <g pointerEvents="none">
+                {THAILAND_PROVINCES.map((prov) => {
+                  const stat = provinceStatsMap[prov.nameTh];
+                  const isMajor =
+                    prov.nameTh === 'กรุงเทพมหานคร' ||
+                    prov.nameTh === 'เชียงใหม่' ||
+                    prov.nameTh === 'ขอนแก่น' ||
+                    prov.nameTh === 'นครราชสีมา' ||
+                    prov.nameTh === 'ชลบุรี' ||
+                    prov.nameTh === 'ภูเก็ต' ||
+                    prov.nameTh === 'สงขลา' ||
+                    prov.nameTh === 'อุบลราชธานี';
+                  const showLabel =
+                    camera.zoom >= 2.2 ||
+                    selectedProvinceName === prov.nameTh ||
+                    (isMajor && camera.zoom >= 1.0) ||
+                    (stat?.totalCases || 0) >= 30;
+                  if (!showLabel) return null;
+
+                  return (
+                    <text
+                      key={`lbl-${prov.id}`}
+                      x={prov.cx}
+                      y={prov.cy + (isMajor && camera.zoom < 2 ? 12 * invZoom : 0)}
+                      textAnchor="middle"
+                      fill={
+                        selectedProvinceName === prov.nameTh
+                          ? '#FFCF90'
+                          : (stat?.totalCases || 0) > 0
+                            ? 'rgba(255,226,195,0.85)'
+                            : 'rgba(181,189,203,0.52)'
+                      }
+                      fontSize={(camera.zoom >= 3.5 ? 9.5 : 8.5) * invZoom}
+                      fontWeight={isMajor || (stat?.totalCases || 0) > 0 ? 600 : 400}
+                      style={{ paintOrder: 'stroke', stroke: '#080C15', strokeWidth: 2.2 * invZoom }}
                     >
-                      <div className="w-6 h-6 rounded-full bg-[#0F131C]/90 border-2 border-[#FFB59D] text-[#FFB59D] flex items-center justify-center shadow cursor-pointer hover:scale-110 transition-transform">
-                        <Plus className="w-3.5 h-3.5" />
-                      </div>
-                    </AdvancedMarker>
-                  ))}
-              </GoogleMap>
-            ) : (
-              <div className="w-full h-full flex items-center justify-center bg-[#0A0E17] p-6 text-center">
-                <div className="max-w-sm space-y-2">
-                  <MapPin className="w-8 h-8 text-[#8E97AB] mx-auto" />
-                  <div className="text-sm font-semibold text-[#F4F6FB]">
-                    รอการเชื่อมต่อ Google Maps API Key
+                      {prov.nameTh === 'กรุงเทพมหานคร' ? 'กทม.' : prov.nameTh}
+                    </text>
+                  );
+                })}
+              </g>
+
+              {/* Hospital Case-Density Halo & Pin Layer */}
+              <g>
+                {renderOrderedHospitals.map((h) => {
+                  const density = getDensityMeta(h.totalCases);
+                  const isSel = selectedHospitalId === h.id;
+                  const isHov = hoveredHospitalId === h.id;
+                  const pinColor =
+                    viewMode === 'density'
+                      ? h.totalCases > 0
+                        ? density.color
+                        : h.inCrm
+                          ? '#94A3B8'
+                          : '#475569'
+                      : HOSPITAL_TYPE_COLORS[h.hospitalType];
+
+                  const haloRadius =
+                    viewMode === 'density' && h.totalCases > 0
+                      ? (h.totalCases >= 120
+                          ? 46
+                          : h.totalCases >= 30
+                            ? Math.min(40, 26 + h.totalCases * 0.14)
+                            : h.totalCases >= 11
+                              ? 22
+                              : 15) * invZoom
+                      : 0;
+
+                  const haloFill =
+                    h.totalCases >= 120
+                      ? 'url(#halo-critical)'
+                      : h.totalCases >= 30
+                        ? 'url(#halo-high)'
+                        : h.totalCases >= 11
+                          ? 'url(#halo-medium)'
+                          : 'url(#halo-low)';
+
+                  const coreRadius =
+                    (h.totalCases >= 120
+                      ? 12
+                      : h.totalCases >= 30
+                        ? 10
+                        : h.totalCases >= 11
+                          ? 8.5
+                          : h.totalCases >= 1
+                            ? 7
+                            : h.inCrm
+                              ? 5.2
+                              : 3.8) *
+                    (isSel ? 1.28 : isHov ? 1.18 : 1) *
+                    invZoom;
+
+                  return (
+                    <g
+                      key={h.id}
+                      transform={`translate(${h.x.toFixed(1)}, ${h.y.toFixed(1)})`}
+                      data-map-interactive="true"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleFocusHospital(h);
+                      }}
+                      onMouseEnter={() => setHoveredHospitalId(h.id)}
+                      onMouseLeave={() =>
+                        setHoveredHospitalId((prev) => (prev === h.id ? null : prev))
+                      }
+                      className="cursor-pointer"
+                    >
+                      {/* Density Heat Halo */}
+                      {haloRadius > 0 && (
+                        <circle r={haloRadius} fill={haloFill} pointerEvents="none" />
+                      )}
+
+                      {/* Outer selection ring */}
+                      {isSel && (
+                        <circle
+                          r={coreRadius + 4.5 * invZoom}
+                          fill="none"
+                          stroke="#FFFFFF"
+                          strokeWidth={1.6 * invZoom}
+                          strokeOpacity={0.9}
+                        />
+                      )}
+
+                      {/* Main Pin Dot */}
+                      <circle
+                        r={coreRadius}
+                        fill={pinColor}
+                        fillOpacity={h.totalCases > 0 || h.inCrm || isSel || isHov ? 0.96 : 0.72}
+                        stroke={isSel ? '#080C15' : h.totalCases > 0 ? '#FFFFFF' : 'rgba(255,255,255,0.45)'}
+                        strokeWidth={(isSel ? 2.2 : h.totalCases > 0 ? 1.4 : 0.7) * invZoom}
+                        filter={h.totalCases >= 30 ? 'url(#soft-glow)' : undefined}
+                      />
+
+                      {/* Case count number inside pin for active hospitals */}
+                      {h.totalCases > 0 && (
+                        <text
+                          textAnchor="middle"
+                          dominantBaseline="central"
+                          fill="#FFFFFF"
+                          fontSize={(h.totalCases >= 100 ? 7.5 : 8.5) * invZoom}
+                          fontWeight={700}
+                          fontFamily="'IBM Plex Mono', monospace"
+                          pointerEvents="none"
+                        >
+                          {h.totalCases}
+                        </text>
+                      )}
+                    </g>
+                  );
+                })}
+              </g>
+            </svg>
+
+            {/* Top-Left Compact Map Zoom Controls */}
+            <div className="absolute top-3.5 left-3.5 z-20 flex flex-col gap-1.5">
+              <button
+                type="button"
+                onClick={() => handleZoomBy(1.35)}
+                aria-label="ซูมเข้า"
+                className="w-9 h-9 rounded-xl bg-[#121724]/90 hover:bg-[#1E2538] border border-white/[0.12] text-[#F4F6FB] flex items-center justify-center shadow-lg transition-colors cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleZoomBy(0.74)}
+                aria-label="ซูมออก"
+                className="w-9 h-9 rounded-xl bg-[#121724]/90 hover:bg-[#1E2538] border border-white/[0.12] text-[#F4F6FB] flex items-center justify-center shadow-lg transition-colors cursor-pointer"
+              >
+                <Minus className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={handleResetCamera}
+                aria-label="รีเซ็ตมุมมองทั้งประเทศ"
+                title="รีเซ็ตมุมมองทั้งประเทศ"
+                className="w-9 h-9 rounded-xl bg-[#121724]/90 hover:bg-[#1E2538] border border-white/[0.12] text-[#FFCF90] flex items-center justify-center shadow-lg transition-colors cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* Bottom-Left Subtle Hover Info Bar */}
+            {(hoveredHospital || hoveredProvObj) && !selectedHospital && (
+              <div className="pointer-events-none absolute bottom-3.5 left-3.5 z-20 max-w-xs bg-[#101522]/92 backdrop-blur-xl border border-white/[0.12] rounded-xl px-3.5 py-2.5 shadow-xl">
+                {hoveredHospital ? (
+                  <>
+                    <div className="text-xs font-semibold text-white truncate">
+                      {hoveredHospital.name}
+                    </div>
+                    <div className="text-[11px] text-[#B5BDCB] mt-0.5">
+                      {hoveredHospital.province} · {hoveredHospital.hospitalType}
+                    </div>
+                    <div className="mt-1 flex items-center gap-3 text-[11px] font-mono tabular-nums">
+                      <span className="text-[#FFCF90] font-semibold">
+                        {hoveredHospital.totalCases.toLocaleString('th-TH')} เคส
+                      </span>
+                      <span className="text-[#8E97AB]">
+                        {hoveredHospital.inCrm ? 'อยู่ใน CRM' : 'คลิกเพื่อดู / นำเข้า CRM'}
+                      </span>
+                    </div>
+                  </>
+                ) : hoveredProvObj ? (
+                  <>
+                    <div className="text-xs font-semibold text-white">
+                      จังหวัด{hoveredProvObj.nameTh}
+                    </div>
+                    <div className="text-[11px] text-[#B5BDCB] mt-0.5">
+                      {hoveredProvObj.region} · รพ. {hoveredProvStat?.hospitalCount || 0} แห่ง ·{' '}
+                      <span className="font-mono tabular-nums text-[#FFCF90] font-semibold">
+                        {(hoveredProvStat?.totalCases || 0).toLocaleString('th-TH')} เคส
+                      </span>
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            )}
+
+            {/* Floating Apple Frosted Glass Hospital Inspector Card (when a pin is selected) */}
+            {selectedHospital && (
+              <div className="absolute bottom-3.5 left-3.5 right-3.5 sm:left-auto sm:right-3.5 sm:w-[330px] z-30 bg-[#121724]/95 backdrop-blur-2xl border border-white/[0.14] rounded-2xl p-4 shadow-2xl space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[11px] text-[#FFCF90] font-medium">
+                      {selectedHospital.hospitalType} · {selectedHospital.province}
+                    </div>
+                    <h3 className="text-sm font-bold text-white leading-snug mt-0.5">
+                      {selectedHospital.name}
+                    </h3>
+                    <div className="text-[11px] text-[#8E97AB] line-clamp-1 mt-0.5">
+                      {selectedHospital.address || selectedHospital.region}
+                    </div>
                   </div>
-                  <p className="text-xs text-[#8E97AB] leading-relaxed">
-                    หากกำลังเปิดผ่านลิงก์เว็บที่แชร์ (Shared App) กรุณากดอัปเดตการเผยแพร่ (Publish / Share) อีกครั้งเพื่อให้เซิร์ฟเวอร์นำคีย์ Google Maps ล่าสุดไปใช้งาน
-                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedHospitalId(null)}
+                    aria-label="ปิดรายละเอียดโรงพยาบาล"
+                    className="p-1 rounded-lg text-[#8E97AB] hover:text-white hover:bg-white/[0.08] cursor-pointer shrink-0"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
+
+                <div className="grid grid-cols-2 gap-2.5 py-2.5 border-y border-white/[0.08]">
+                  <div>
+                    <div className="text-[11px] text-[#8E97AB]">เคสสะสมรวม</div>
+                    <div
+                      className="text-lg font-bold font-mono tabular-nums"
+                      style={{ color: getDensityMeta(selectedHospital.totalCases).color }}
+                    >
+                      {selectedHospital.totalCases.toLocaleString('th-TH')} เคส
+                    </div>
+                    {selectedHospital.officeCasesCount > 0 && (
+                      <div className="text-[10px] text-[#B5BDCB] mt-0.5">
+                        CRM {selectedHospital.crmCases} · ออฟฟิศ {selectedHospital.officeCasesCount}
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-[#8E97AB]">มูลค่ายอดขายสะสม</div>
+                    <div className="text-base font-bold font-mono tabular-nums text-white mt-0.5">
+                      {formatCurrency(selectedHospital.totalRevenue)}
+                    </div>
+                    <div className="text-[10px] text-[#8E97AB] mt-0.5">
+                      {getDensityMeta(selectedHospital.totalCases).tierCode}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between text-xs text-[#B5BDCB]">
+                  <span>
+                    สถานะ:{' '}
+                    <span className="text-white font-medium">
+                      {selectedHospital.inCrm
+                        ? HOSPITAL_STATUS_LABEL[selectedHospital.status]
+                        : 'รพ.เครือข่ายทั่วประเทศ'}
+                    </span>
+                  </span>
+                  <span className="font-mono text-[10px] text-[#8E97AB]">
+                    {selectedHospital.lat.toFixed(3)}, {selectedHospital.lng.toFixed(3)}
+                  </span>
+                </div>
+
+                {selectedHospital.crmHospital ? (
+                  <button
+                    type="button"
+                    onClick={() => onSelectAddDeal(selectedHospital.crmHospital!)}
+                    className="btn-luxury-orange w-full min-h-[40px] py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    เพิ่มเคส / สร้างดีลใหม่
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={importingSingleId === selectedHospital.id}
+                    onClick={() => void handleImportSingleHospital(selectedHospital)}
+                    className="btn-luxury-orange w-full min-h-[40px] py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
+                  >
+                    {importingSingleId === selectedHospital.id ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Download className="w-3.5 h-3.5" />
+                    )}
+                    {importingSingleId === selectedHospital.id
+                      ? 'กำลังนำเข้า CRM...'
+                      : 'นำเข้าโรงพยาบาลนี้เข้าสู่ CRM'}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Bottom-Right Subtle Zoom Indicator */}
+            {!selectedHospital && (
+              <div className="pointer-events-none absolute bottom-3.5 right-3.5 z-20 text-[11px] font-mono tabular-nums text-[#8E97AB] bg-[#101522]/80 border border-white/[0.08] rounded-lg px-2.5 py-1">
+                {camera.zoom.toFixed(1)}× · เลื่อนลูกกลิ้งเพื่อซูม / ลากเพื่อเลื่อน
               </div>
             )}
           </div>
         </div>
 
-        {/* Right Panel: Ranked Hospital Case Density List */}
-        <div className="lg:col-span-4 glass-panel rounded-2xl flex flex-col overflow-hidden max-h-[650px]">
-          <div className="px-4 py-3.5 border-b border-white/[0.08] flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Flame className="w-4 h-4 text-[#FF5E1E]" />
-              <h2 className="text-sm font-semibold text-[#F4F6FB]">
-                จัดอันดับความหนาแน่นเคส
-              </h2>
-            </div>
-            <span className="text-xs font-mono tabular-nums text-[#8E97AB]">
-              {filteredHospitals.length} แห่ง
-            </span>
-          </div>
-
-          <div className="flex-1 overflow-y-auto divide-y divide-white/[0.06]">
-            {filteredHospitals.length === 0 ? (
-              <div className="p-8 text-center space-y-3">
-                <Building2 className="w-8 h-8 text-[#8E97AB] mx-auto" />
-                <div className="text-sm font-semibold text-[#F4F6FB]">
-                  ยังไม่มีโรงพยาบาลบนแผนที่
-                </div>
-                <p className="text-xs text-[#B5BDCB] leading-relaxed">
-                  กดปุ่ม "นำเข้า 5 รพ. อ้างอิง CTEC" ด้านบนเพื่อดึงพิกัดจริงจาก Google Maps พร้อมเคสอ้างอิงทันที หรือค้นหาจังหวัดที่ต้องการ
-                </p>
+        {/* Right 4 Cols: Nationwide Hospital & Province Ranking Panel */}
+        <div className="lg:col-span-4 glass-panel rounded-2xl flex flex-col overflow-hidden max-h-[700px]">
+          {/* Panel Tab Header */}
+          <div className="px-4 py-3 border-b border-white/[0.08] space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="inline-flex items-center p-1 rounded-xl bg-[#0A0E17]/80 border border-white/[0.08]">
                 <button
                   type="button"
-                  disabled={syncingCtecRefs || !hasMapsKey}
-                  onClick={() => void handleSyncCtecReferenceHospitals()}
-                  className="btn-luxury-orange px-4 py-2 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  onClick={() => setSideTab('hospitals')}
+                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer inline-flex items-center gap-1.5 ${
+                    sideTab === 'hospitals'
+                      ? 'bg-[#FF5E1E] text-white'
+                      : 'text-[#B5BDCB] hover:text-white'
+                  }`}
                 >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  นำเข้า 5 รพ. อ้างอิง CTEC
+                  <Flame className="w-3.5 h-3.5" />
+                  รายชื่อ รพ. ({filteredHospitals.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSideTab('provinces')}
+                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer inline-flex items-center gap-1.5 ${
+                    sideTab === 'provinces'
+                      ? 'bg-[#FF5E1E] text-white'
+                      : 'text-[#B5BDCB] hover:text-white'
+                  }`}
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  77 จังหวัด ({rankedProvinces.length})
                 </button>
               </div>
-            ) : (
-              filteredHospitals.map((h) => {
-                const density = getDensityMeta(h.caseCount);
-                const selected = selectedHospitalId === h.id;
-                const progressPct = Math.min(100, Math.round((h.caseCount / 150) * 100));
+            </div>
 
-                return (
+            {sideTab === 'hospitals' && filteredHospitals.some((h) => !h.inCrm) && (
+              <button
+                type="button"
+                disabled={importingRegion}
+                onClick={() => void handleBatchImportFilteredToCrm()}
+                className="w-full py-2 px-3 rounded-xl bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.08] text-xs font-medium text-[#FFCF90] flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {importingRegion ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Download className="w-3.5 h-3.5" />
+                )}
+                {importingRegion
+                  ? 'กำลังนำเข้าข้อมูล รพ. เข้าสู่ CRM...'
+                  : `นำเข้า รพ. ในมุมมองนี้เข้าสู่ CRM (สูงสุด 20 แห่ง/ครั้ง)`}
+              </button>
+            )}
+          </div>
+
+          {/* Scrollable List */}
+          <div className="flex-1 overflow-y-auto divide-y divide-white/[0.06]">
+            {sideTab === 'hospitals' ? (
+              filteredHospitals.length === 0 ? (
+                <div className="p-8 text-center space-y-2.5">
+                  <Building2 className="w-8 h-8 text-[#8E97AB] mx-auto" />
+                  <div className="text-sm font-semibold text-[#F4F6FB]">
+                    ไม่พบโรงพยาบาลตามตัวกรอง
+                  </div>
+                  <p className="text-xs text-[#B5BDCB]">
+                    ลองล้างคำค้นหาหรือเปลี่ยนกลับเป็นมุมมองทั้งประเทศ
+                  </p>
                   <button
-                    key={h.id}
                     type="button"
                     onClick={() => {
-                      setSelectedHospitalId(h.id);
-                      setCameraTarget({ lat: h.lat, lng: h.lng, zoom: 13 });
+                      setSearchQuery('');
+                      setDensityFilter('all');
+                      setScopeMode('nationwide');
+                      handleResetCamera();
                     }}
-                    className={`w-full text-left px-4 py-3.5 hover:bg-white/[0.05] transition-colors cursor-pointer ${
-                      selected ? 'bg-[#FF5E1E]/10' : ''
+                    className="btn-glass px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer"
+                  >
+                    แสดงโรงพยาบาลทั้งหมด
+                  </button>
+                </div>
+              ) : (
+                filteredHospitals.map((h) => {
+                  const density = getDensityMeta(h.totalCases);
+                  const selected = selectedHospitalId === h.id;
+                  const progressPct =
+                    h.totalCases > 0 ? Math.min(100, Math.max(8, Math.round((h.totalCases / 150) * 100))) : 0;
+
+                  return (
+                    <div
+                      key={h.id}
+                      onClick={() => handleFocusHospital(h)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleFocusHospital(h);
+                        }
+                      }}
+                      className={`w-full text-left px-4 py-3 hover:bg-white/[0.05] transition-colors cursor-pointer ${
+                        selected ? 'bg-[#FF5E1E]/12' : ''
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-[#F4F6FB] truncate">
+                            {h.name}
+                          </div>
+                          <div className="text-xs text-[#B5BDCB] mt-0.5 truncate">
+                            {h.province} · {h.hospitalType}
+                            {h.inCrm ? ' · CRM' : ''}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div
+                            className="text-sm font-bold font-mono tabular-nums"
+                            style={{ color: h.totalCases > 0 ? density.color : '#8E97AB' }}
+                          >
+                            {h.totalCases.toLocaleString('th-TH')} เคส
+                          </div>
+                          <div className="text-[11px] font-mono tabular-nums text-[#8E97AB]">
+                            {h.totalRevenue > 0 ? formatCompactCurrency(h.totalRevenue) : '—'}
+                          </div>
+                        </div>
+                      </div>
+
+                      {h.totalCases > 0 && (
+                        <div className="mt-2 flex items-center gap-2">
+                          <div className="flex-1 h-1.5 bg-white/[0.08] rounded-full overflow-hidden">
+                            <div
+                              className="h-full rounded-full transition-all"
+                              style={{
+                                width: `${progressPct}%`,
+                                backgroundColor: density.color,
+                              }}
+                            />
+                          </div>
+                          <span
+                            className="text-[10px] font-mono font-bold whitespace-nowrap"
+                            style={{ color: density.color }}
+                          >
+                            {density.tierCode}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )
+            ) : (
+              rankedProvinces.map((prov) => {
+                const isSel = selectedProvinceName === prov.nameTh;
+                const density = getDensityMeta(prov.totalCases);
+                return (
+                  <button
+                    key={prov.id}
+                    type="button"
+                    onClick={() => handleFocusProvince(prov)}
+                    className={`w-full text-left px-4 py-3 hover:bg-white/[0.05] transition-colors cursor-pointer flex items-center justify-between gap-3 ${
+                      isSel ? 'bg-[#FF5E1E]/12' : ''
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="text-sm font-semibold text-[#F4F6FB] truncate">
-                          {h.name}
-                        </div>
-                        <div className="text-xs text-[#B5BDCB] mt-0.5 truncate">
-                          {h.province || h.region} · {h.ownerName}
-                        </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-[#F4F6FB] truncate">
+                        {prov.nameTh}
                       </div>
-                      <div className="text-right shrink-0">
-                        <div
-                          className="text-sm font-bold font-mono tabular-nums"
-                          style={{ color: density.color }}
-                        >
-                          {h.caseCount} เคส
-                        </div>
-                        <div className="text-[11px] font-mono tabular-nums text-[#8E97AB]">
-                          {formatCurrency(h.totalRevenue)}
-                        </div>
+                      <div className="text-xs text-[#8E97AB] mt-0.5">
+                        {prov.region} · รพ. {prov.hospitalCount} แห่ง
                       </div>
                     </div>
-
-                    <div className="mt-2.5 flex items-center gap-2">
-                      <div className="flex-1 h-1.5 bg-white/[0.08] rounded-full overflow-hidden">
-                        <div
-                          className="h-full rounded-full transition-all"
-                          style={{
-                            width: `${Math.max(6, progressPct)}%`,
-                            backgroundColor: density.color,
-                          }}
-                        />
-                      </div>
-                      <span
-                        className="text-[10px] font-mono font-bold whitespace-nowrap"
-                        style={{ color: density.color }}
+                    <div className="text-right shrink-0">
+                      <div
+                        className="text-sm font-bold font-mono tabular-nums"
+                        style={{ color: prov.totalCases > 0 ? density.color : '#8E97AB' }}
                       >
-                        {density.tierCode}
-                      </span>
+                        {prov.totalCases.toLocaleString('th-TH')} เคส
+                      </div>
+                      {prov.totalRevenue > 0 && (
+                        <div className="text-[11px] font-mono tabular-nums text-[#8E97AB]">
+                          {formatCompactCurrency(prov.totalRevenue)}
+                        </div>
+                      )}
                     </div>
                   </button>
                 );

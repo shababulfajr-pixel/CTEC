@@ -605,3 +605,61 @@ export async function updateUserRoleAndStatus(
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
+
+export async function clearAllWorkspaceRecords(params: {
+  dealsIds: string[];
+  hospitalsIds: string[];
+  officeCaseIds: string[];
+  notificationIds: string[];
+  actor: UserProfile;
+}): Promise<{
+  dealsDeleted: number;
+  hospitalsDeleted: number;
+  officeCasesDeleted: number;
+  notificationsDeleted: number;
+}> {
+  const { dealsIds, hospitalsIds, officeCaseIds, notificationIds, actor } = params;
+  let dealsDeleted = 0;
+  let hospitalsDeleted = 0;
+  let officeCasesDeleted = 0;
+  let notificationsDeleted = 0;
+
+  try {
+    // Delete deals first (child records referencing hospitals)
+    for (const id of dealsIds) {
+      await deleteDoc(doc(db, 'deals', id));
+      dealsDeleted += 1;
+    }
+    for (const id of hospitalsIds) {
+      await deleteDoc(doc(db, 'hospitals', id));
+      hospitalsDeleted += 1;
+    }
+    for (const id of officeCaseIds) {
+      await deleteDoc(doc(db, 'officeCases', id));
+      officeCasesDeleted += 1;
+    }
+    for (const id of notificationIds) {
+      await deleteDoc(doc(db, 'notifications', id));
+      notificationsDeleted += 1;
+    }
+
+    await logAuditEvent({
+      action: 'ล้างข้อมูลเดโม่เพื่อเริ่มใช้งานจริง',
+      targetType: 'report',
+      targetId: `workspace-reset-${getTodayDateKey()}`,
+      targetLabel: 'รีเซ็ตฐานข้อมูลเริ่มต้น (Production Clean Start)',
+      actorId: actor.uid,
+      actorName: actor.displayName,
+      details: `ลบดีล ${dealsDeleted} · โรงพยาบาล ${hospitalsDeleted} · เคสออฟฟิศ ${officeCasesDeleted} · แจ้งเตือน ${notificationsDeleted}`,
+    });
+
+    return {
+      dealsDeleted,
+      hospitalsDeleted,
+      officeCasesDeleted,
+      notificationsDeleted,
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, 'workspace-reset');
+  }
+}

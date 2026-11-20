@@ -7,14 +7,11 @@ import {
   Download,
   FileSpreadsheet,
   Loader2,
-  RefreshCw,
-  Sparkles,
   Trash2,
   Upload,
   X,
 } from 'lucide-react';
 import {
-  CTEC_OFFICE_REFERENCE_CASES,
   downloadOfficeCaseTemplateExcel,
   parseCtecOfficeTextDetailed,
   parseCtecOfficeUploadDetailed,
@@ -40,7 +37,7 @@ interface ImportOfficeCasesModalProps {
   onNotifyToast: (msg: string) => void;
 }
 
-type SourceTab = 'file' | 'paste' | 'reference';
+type SourceTab = 'file' | 'paste';
 
 const FORMAT_LABELS: Record<ImportDetectedFormat, string> = {
   ctec_raw_ledger: 'ทะเบียน CTEC ต้นฉบับ (54 คอลัมน์)',
@@ -159,15 +156,6 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
     setImportResult(null);
     const res = parseCtecOfficeTextDetailed(pasteText);
     applyParsedPreview(res.cases, res.detectedFormat, 'ข้อมูลวางจากตาราง', res.warnings);
-  };
-
-  const handleLoadReferenceCases = () => {
-    applyParsedPreview(
-      CTEC_OFFICE_REFERENCE_CASES,
-      'ctec_raw_ledger',
-      'ไฟล์แนบ CTEC (รับเคสคิว19-11-69)',
-      []
-    );
   };
 
   const handleClearPreview = () => {
@@ -308,22 +296,6 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                 <ClipboardPaste className="w-3.5 h-3.5" />
                 วางจาก Excel / Google Sheets
               </button>
-              <button
-                type="button"
-                disabled={importing}
-                onClick={() => {
-                  setSourceTab('reference');
-                  handleLoadReferenceCases();
-                }}
-                className={`px-3.5 py-2 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 transition cursor-pointer ${
-                  sourceTab === 'reference'
-                    ? 'bg-gradient-to-r from-[#FF6B2B] to-[#FF9457] text-white shadow-lg shadow-[#FF6B2B]/25'
-                    : 'text-[#C8B6AE] hover:text-white hover:bg-white/5'
-                }`}
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                14 เคสจากไฟล์แนบ CTEC
-              </button>
             </div>
 
             <button
@@ -392,18 +364,6 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                   <FileSpreadsheet className="w-4 h-4" />
                   เลือกไฟล์จากเครื่อง
                 </button>
-                <button
-                  type="button"
-                  disabled={parsing || importing}
-                  onClick={() => {
-                    setSourceTab('reference');
-                    handleLoadReferenceCases();
-                  }}
-                  className="btn-glass px-4 py-2.5 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-[#FFCF90]" />
-                  ทดลองโหลด 14 เคสจากไฟล์แนบ
-                </button>
               </div>
             </div>
           )}
@@ -420,17 +380,6 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                     แนะนำให้คัดลอกรวมแถวหัวคอลัมน์ (เช่น <span className="text-white/85">เลขที่รับงาน, โรงพยาบาล, ชื่อคนไข้, แพทย์, ราคา</span>) — ไม่จำเป็นต้องครบทุกช่อง
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setPasteText(
-                      `เลขที่รับงาน\tโรงพยาบาล\tชื่อคนไข้\tHN\tแพทย์\tรหัสสินค้า\tวันผ่าตัด\tราคา\n2569-510\tพหลพลพยุหเสนา กาญจนบุรี\tนาย สมศักดิ์ ทดสอบ\t1098888\tแพทย์หญิงนภาภรณ์ พุ่มมรินทร์\tCTPMMA-003\t25/12/2569\t22500`
-                    )
-                  }
-                  className="text-xs text-[#FFB59D] hover:text-white underline underline-offset-2 cursor-pointer"
-                >
-                  ใส่ตัวอย่างข้อความ
-                </button>
               </div>
 
               <textarea
@@ -464,34 +413,6 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                   ตรวจสอบและแสดงตัวอย่าง
                 </button>
               </div>
-            </div>
-          )}
-
-          {/* Source Tab 3: Built-in 14 Reference Cases */}
-          {sourceTab === 'reference' && (
-            <div className="rounded-2xl border border-[#FF9457]/30 bg-[#FF6B2B]/10 px-4 py-3.5 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-[#FF6B2B]/20 border border-[#FF9457]/40 flex items-center justify-center shrink-0">
-                  <Sparkles className="w-4 h-4 text-[#FFCF90]" />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-white">
-                    ชุดข้อมูลอ้างอิงจากไฟล์แนบ CTEC (รับเคสคิว19-11-69)
-                  </p>
-                  <p className="text-xs text-[#E4CFC4]">
-                    พร้อมตรวจสอบทั้งหมด 14 เคส (จัดส่งแล้ว 13 เคส · ส่งฆ่าเชื้อ 1 เคส) ก่อนกดบันทึกเข้าฐานข้อมูล
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                disabled={importing}
-                onClick={handleLoadReferenceCases}
-                className="btn-glass px-3 py-1.5 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                โหลดใหม่
-              </button>
             </div>
           )}
 

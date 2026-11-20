@@ -11,7 +11,6 @@ import {
   Package,
   Plus,
   Search,
-  Sparkles,
   Trash2,
   Truck,
   Upload,
@@ -19,7 +18,6 @@ import {
 } from 'lucide-react';
 import { getFriendlyFirestoreError } from '../firebase';
 import {
-  CTEC_OFFICE_REFERENCE_CASES,
   exportOfficeCasesToExcel,
   inferWorkflowStatus,
   type OfficeCaseSeedInput,
@@ -28,7 +26,6 @@ import { ImportOfficeCasesModal } from './ImportOfficeCasesModal';
 import {
   createOfficeCase,
   deleteOfficeCase,
-  importOfficeCasesBatch,
   officeCaseToInput,
   quickUpdateOfficeCaseStatus,
   updateOfficeCase,
@@ -104,8 +101,8 @@ function getTodayThaiDate(): string {
 }
 
 function buildEmptyForm(existingCases: OfficeCase[], defaultReceiver: string): OfficeCaseSeedInput {
-  const maxSalesSeq = existingCases.reduce((m, c) => Math.max(m, c.salesSeqNo || 0), 4451);
-  const maxMonthlySeq = existingCases.reduce((m, c) => Math.max(m, c.monthlySeq || 0), 15);
+  const maxSalesSeq = existingCases.reduce((m, c) => Math.max(m, c.salesSeqNo || 0), 0);
+  const maxMonthlySeq = existingCases.reduce((m, c) => Math.max(m, c.monthlySeq || 0), 0);
   const thaiYear = new Date().getFullYear() + 543;
   const nextJobCounter = String(existingCases.length + 1).padStart(3, '0');
 
@@ -241,7 +238,6 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
   });
   const [quickSubmitting, setQuickSubmitting] = useState(false);
 
-  const [importing, setImporting] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [viewingCase, setViewingCase] = useState<OfficeCase | null>(null);
   const [updatingCaseId, setUpdatingCaseId] = useState<string | null>(null);
@@ -537,32 +533,6 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
     }
   };
 
-  const handleImportAttachedCases = async () => {
-    if (!canWrite || importing) return;
-    setImporting(true);
-    try {
-      const res = await importOfficeCasesBatch(
-        CTEC_OFFICE_REFERENCE_CASES,
-        officeCases,
-        currentUser,
-        { sourceLabel: 'ไฟล์แนบ CTEC (รับเคสคิว19-11-69)' }
-      );
-      if (res.imported > 0) {
-        onNotifyToast(
-          `นำเข้าข้อมูลเคสจากไฟล์แนบสำเร็จ ${res.imported} รายการ${res.skipped > 0 ? ` (ข้ามรายการซ้ำ ${res.skipped})` : ''}${res.failed > 0 ? ` · ไม่สำเร็จ ${res.failed}` : ''}`
-        );
-      } else if (res.failed > 0) {
-        onNotifyToast(res.errors[0] || 'ไม่สามารถนำเข้าข้อมูลจากไฟล์แนบได้');
-      } else {
-        onNotifyToast('ข้อมูลเคสทั้ง 14 รายการจากไฟล์แนบถูกนำเข้าไว้ในระบบครบแล้ว');
-      }
-    } catch (err) {
-      onNotifyToast(getFriendlyFirestoreError(err, 'ไม่สามารถนำเข้าข้อมูลจากไฟล์แนบได้'));
-    } finally {
-      setImporting(false);
-    }
-  };
-
   const handleExportExcel = () => {
     exportOfficeCasesToExcel(filteredCases, currentUser.displayName);
     onNotifyToast(`ส่งออกตารางเคสออฟฟิศ ${filteredCases.length} รายการเป็น Excel แล้ว`);
@@ -675,31 +645,14 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
 
         <div className="flex flex-wrap items-center gap-2">
           {canWrite && (
-            <>
-              <button
-                type="button"
-                disabled={importing}
-                onClick={() => void handleImportAttachedCases()}
-                className="btn-glass min-h-[40px] px-3.5 py-2 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
-              >
-                {importing ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[#FFCF90]" />
-                ) : (
-                  <Sparkles className="w-3.5 h-3.5 text-[#FFCF90]" />
-                )}
-                นำเข้า 14 เคสจากไฟล์แนบ
-              </button>
-
-              <button
-                type="button"
-                disabled={importing}
-                onClick={() => setShowImportModal(true)}
-                className="btn-glass min-h-[40px] px-3.5 py-2 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
-              >
-                <Upload className="w-3.5 h-3.5 text-[#FFB59D]" />
-                นำเข้าเคส (Excel / CSV)
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={() => setShowImportModal(true)}
+              className="btn-glass min-h-[40px] px-3.5 py-2 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5 text-[#FFB59D]" />
+              นำเข้าเคส (Excel / CSV)
+            </button>
           )}
 
           <button
@@ -914,23 +867,13 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
             </div>
             <p className="text-xs text-[#B5BDCB] max-w-md mx-auto">
               {officeCases.length === 0
-                ? 'กดปุ่ม "นำเข้า 14 เคสจากไฟล์แนบ" หรือกด "รับเคสใหม่" เพื่อเริ่มบันทึกข้อมูลเบื้องต้นและอัปเดตภายหลังได้ทันที'
+                ? 'กดปุ่ม "นำเข้าจาก Excel / CSV" หรือกด "รับเคสใหม่" เพื่อเริ่มบันทึกข้อมูลเคสจริงและอัปเดตสถานะจัดส่งได้ทันที'
                 : 'ลองล้างคำค้นหาหรือเปลี่ยนตัวกรองสถานะด้านบน'}
             </p>
             {officeCases.length === 0 && canWrite && (
               <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
                 <button
                   type="button"
-                  disabled={importing}
-                  onClick={() => void handleImportAttachedCases()}
-                  className="btn-glass px-4 py-2 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-[#FFCF90]" />
-                  นำเข้า 14 เคสจากไฟล์แนบ
-                </button>
-                <button
-                  type="button"
-                  disabled={importing}
                   onClick={() => setShowImportModal(true)}
                   className="btn-glass px-4 py-2 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
                 >

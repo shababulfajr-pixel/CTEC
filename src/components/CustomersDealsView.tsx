@@ -46,7 +46,6 @@ interface CustomersDealsViewProps {
   currentUser: UserProfile;
   hospitals: Hospital[];
   deals: Deal[];
-  hasMapsKey: boolean;
   globalSearch?: string;
   preselectedHospitalForDeal: Hospital | null;
   openAddHospitalSignal: number;
@@ -62,7 +61,6 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
   currentUser,
   hospitals,
   deals,
-  hasMapsKey,
   globalSearch = '',
   preselectedHospitalForDeal,
   openAddHospitalSignal,
@@ -233,6 +231,7 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
       region: place.region,
       lat: place.lat,
       lng: place.lng,
+      hospitalType: place.hospitalType || prev.hospitalType,
       contactPhone: place.phone || prev.contactPhone,
     }));
   };
@@ -544,7 +543,7 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
               </div>
               <p className="text-xs text-[#e3beb3]/70">
                 {hospitals.length === 0
-                  ? 'คุณสามารถกดปุ่มเพิ่มโรงพยาบาลด้านบน หรือนำเข้าโรงพยาบาลอ้างอิง CTEC จากแดชบอร์ด/แผนที่'
+                  ? 'คุณสามารถกดปุ่มเพิ่มโรงพยาบาลด้านบน หรือเลือกเพิ่มโรงพยาบาลจากแผนที่ 77 จังหวัดทั่วประเทศ'
                   : 'กดปุ่ม "เพิ่มดีล / เคสใหม่" เพื่อเริ่มติดตามโอกาสทางการขายและอัปเดตยอดขายรายวัน'}
               </p>
               <button
@@ -759,7 +758,7 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
                 ยังไม่มีรายชื่อโรงพยาบาลในระบบ
               </div>
               <p className="text-xs text-[#e3beb3]/70">
-                เพิ่มโรงพยาบาลด้วยระบบค้นหาพิกัด Google Maps หรือนำเข้า 5 รพ. อ้างอิง CTEC จากหน้าแผนที่
+                เพิ่มโรงพยาบาลจากฐานข้อมูล 77 จังหวัดทั่วประเทศ หรือนำเข้าโรงพยาบาลจากหน้าแผนที่ออฟไลน์
               </p>
               <button
                 type="button"
@@ -958,10 +957,10 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
             </div>
 
             <form onSubmit={handleSaveHospital} className="p-5 space-y-4 max-h-[80vh] overflow-y-auto">
-              {hasMapsKey && !editingHospital && (
+              {!editingHospital && (
                 <div className="space-y-1.5">
                   <label className="block text-xs font-semibold text-[#ffb59d]">
-                    ค้นหาโรงพยาบาลจริงจาก Google Maps (ดึงชื่อ ที่อยู่ และพิกัดอัตโนมัติ)
+                    ค้นหาโรงพยาบาลทั่วประเทศ 77 จังหวัด (ดึงชื่อ ที่อยู่ และพิกัดอัตโนมัติ)
                   </label>
                   <HospitalPlaceAutocomplete onSelect={handlePlaceAutofill} />
                 </div>

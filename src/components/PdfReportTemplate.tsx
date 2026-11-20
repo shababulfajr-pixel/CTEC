@@ -1,5 +1,4 @@
 import React from 'react';
-import { CTEC_MONTHLY_YEARLY_CASES } from '../data/ctecReferenceData';
 import {
   DEAL_STAGE_META,
   DEAL_STAGE_ORDER,
@@ -42,16 +41,6 @@ export const PdfReportTemplate: React.FC<PdfReportTemplateProps> = ({
     .slice(0, 12);
 
   const yearlyTotals = (['2024', '2025', '2026'] as const).map((year) => {
-    const baseCases = CTEC_MONTHLY_YEARLY_CASES.reduce(
-      (sum, m) =>
-        sum + (year === '2024' ? m.cases2024 : year === '2025' ? m.cases2025 : m.cases2026),
-      0
-    );
-    const baseRev = CTEC_MONTHLY_YEARLY_CASES.reduce(
-      (sum, m) =>
-        sum + (year === '2024' ? m.revenue2024 : year === '2025' ? m.revenue2025 : m.revenue2026),
-      0
-    );
     const liveYearDeals = deals.filter(
       (d) => (d.dateKey || d.expectedCloseDate || '').startsWith(year)
     );
@@ -61,9 +50,9 @@ export const PdfReportTemplate: React.FC<PdfReportTemplateProps> = ({
       .reduce((sum, d) => sum + (d.amount || 0), 0);
     return {
       year,
-      cases: baseCases + liveCases,
-      avgPerMonth: Math.round((baseCases + liveCases) / 12),
-      revenue: baseRev + liveRev,
+      cases: liveCases,
+      avgPerMonth: Math.round(liveCases / 12),
+      revenue: liveRev,
     };
   });
 
