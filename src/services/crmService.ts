@@ -10,7 +10,7 @@ import {
   updateDoc,
   writeBatch,
 } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import {
   BOOTSTRAP_ADMIN_EMAIL,
   DEAL_STAGE_META,
@@ -194,63 +194,110 @@ export interface HospitalInput {
   notes: string;
 }
 
+function buildHospitalCreateDoc(input: HospitalInput, actor: UserProfile) {
+  const caseCount = clampNumber(input.caseCount, 0, 100_000);
+  const computedStatus: HospitalStatus =
+    caseCount >= 30 ? 'high_priority' : input.status;
+  const ownerId = auth.currentUser?.uid || actor.uid;
+  const ownerName =
+    clampString(actor.displayName || auth.currentUser?.displayName, 120) || 'ทีมขาย CTEC';
+  const safeName = clampString(input.name, 180);
+
+  return {
+    orgId: ORG_ID,
+    name: safeName.length >= 2 ? safeName : `${safeName || 'รพ.'} (คู่ค้า)`,
+    placeId: clampString(input.placeId, 200),
+    address: clampString(input.address, 300),
+    province: clampString(input.province, 80),
+    region: input.region,
+    lat: clampNumber(input.lat, -90, 90),
+    lng: clampNumber(input.lng, -180, 180),
+    hospitalType: input.hospitalType,
+    caseCount,
+    totalRevenue: clampNumber(input.totalRevenue, 0, 10_000_000_000),
+    activeDealsCount: clampNumber(input.activeDealsCount, 0, 10_000),
+    status: computedStatus,
+    contactName: clampString(input.contactName, 120),
+    contactRole: clampString(input.contactRole, 100),
+    contactPhone: clampString(input.contactPhone, 40),
+    ownerId,
+    ownerName,
+    notes: clampString(input.notes, 1000),
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+}
+
 export async function createHospital(
   input: HospitalInput,
   actor: UserProfile
 ): Promise<string> {
   const path = 'hospitals';
-  const caseCount = clampNumber(input.caseCount, 0, 100_000);
-  const computedStatus: HospitalStatus =
-    caseCount >= 30 ? 'high_priority' : input.status;
+  const payload = buildHospitalCreateDoc(input, actor);
 
   try {
-    const docRef = await addDoc(collection(db, path), {
-      orgId: ORG_ID,
-      name: clampString(input.name, 180),
-      placeId: clampString(input.placeId, 200),
-      address: clampString(input.address, 300),
-      province: clampString(input.province, 80),
-      region: input.region,
-      lat: clampNumber(input.lat, -90, 90),
-      lng: clampNumber(input.lng, -180, 180),
-      hospitalType: input.hospitalType,
-      caseCount,
-      totalRevenue: clampNumber(input.totalRevenue, 0, 10_000_000_000),
-      activeDealsCount: clampNumber(input.activeDealsCount, 0, 10_000),
-      status: computedStatus,
-      contactName: clampString(input.contactName, 120),
-      contactRole: clampString(input.contactRole, 100),
-      contactPhone: clampString(input.contactPhone, 40),
-      ownerId: actor.uid,
-      ownerName: clampString(actor.displayName, 120),
-      notes: clampString(input.notes, 1000),
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    const docRef = await addDoc(collection(db, path), payload);
 
     await logAuditEvent({
-      action: 'เพิ่มลูกค้าโรงพยาบาล',
+      action: 'เพิ่มโรงพยาบาลคู่ค้า',
       targetType: 'hospital',
       targetId: docRef.id,
-      targetLabel: clampString(input.name, 180),
+      targetLabel: payload.name,
       actorId: actor.uid,
       actorName: actor.displayName,
-      details: `จังหวัด ${input.province || '-'} · จำนวนเคสเริ่มต้น ${caseCount} เคส`,
+      details: `จังหวัด ${payload.province || '-'} · จำนวนเคสเริ่มต้น ${payload.caseCount} เคส`,
     });
 
-    if (caseCount >= 30) {
+    if (payload.caseCount >= 30) {
       await safePublishNotification({
         type: 'high_density_alert',
-        title: `พบโรงพยาบาลเคสหนาแน่นสูง: ${clampString(input.name, 100)}`,
-        message: `${input.name} (${input.province || input.region}) มีจำนวนเคสสะสม ${caseCount} เคส ควรจัดลำดับความสำคัญดูแลพิเศษ`,
-        amount: clampNumber(input.totalRevenue, 0, 10_000_000_000),
-        caseCount,
+        title: `พบโรงพยาบาลเคสหนาแน่นสูง: ${clampString(payload.name, 100)}`,
+        message: `${payload.name} (${payload.province || payload.region}) มีจำนวนเคสสะสม ${payload.caseCount} เคส ควรจัดลำดับความสำคัญดูแลพิเศษ`,
+        amount: payload.totalRevenue,
+        caseCount: payload.caseCount,
         createdBy: actor.uid,
         createdByName: actor.displayName,
       });
     }
 
     return docRef.id;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function createHospitalsBatch(
+  inputs: HospitalInput[],
+  actor: UserProfile
+): Promise<number> {
+  if (inputs.length === 0) return 0;
+  const path = 'hospitals';
+  const CHUNK_SIZE = 100;
+  let created = 0;
+
+  try {
+    const colRef = collection(db, path);
+    for (let i = 0; i < inputs.length; i += CHUNK_SIZE) {
+      const slice = inputs.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      for (const item of slice) {
+        batch.set(doc(colRef), buildHospitalCreateDoc(item, actor));
+      }
+      await batch.commit();
+      created += slice.length;
+    }
+
+    await logAuditEvent({
+      action: 'ซิงก์โรงพยาบาลคู่ค้าจากข้อมูลเคสออฟฟิศ',
+      targetType: 'hospital',
+      targetId: `sync-hospitals-${Date.now()}`,
+      targetLabel: `เพิ่มโรงพยาบาลคู่ค้า ${created} แห่งเข้าทะเบียน CRM`,
+      actorId: actor.uid,
+      actorName: actor.displayName,
+      details: `เชื่อมต่อรายชื่อโรงพยาบาลคู่ค้าจากข้อมูลเคสออฟฟิศ/Excel เข้าสู่ฐานข้อมูล CRM อัตโนมัติ`,
+    });
+
+    return created;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
   }

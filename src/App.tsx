@@ -389,16 +389,6 @@ export default function App() {
     setActiveTab('map');
   }, []);
 
-  const handleSelectAddDealFromMap = useCallback((hospital: Hospital) => {
-    setPreselectedHospitalForDeal(hospital);
-    setActiveTab('pipeline');
-  }, []);
-
-  const handleSelectAddHospital = useCallback(() => {
-    setActiveTab('pipeline');
-    setOpenAddHospitalSignal((n) => n + 1);
-  }, []);
-
   const handleOpenNewDeal = useCallback(() => {
     setActiveTab('pipeline');
     setOpenAddDealSignal((n) => n + 1);
@@ -729,13 +719,10 @@ export default function App() {
 
           {activeTab === 'map' && (
             <HospitalMapView
-              hospitals={hospitals}
               officeCases={officeCases}
-              currentUser={currentUser}
+              focusLookupHospitals={hospitals}
               focusedHospitalId={focusedHospitalId}
-              onSelectAddDeal={handleSelectAddDealFromMap}
-              onSelectAddHospital={handleSelectAddHospital}
-              onNotifyToast={showToast}
+              onOpenOfficeCases={canAccessOfficeCases ? () => setActiveTab('office_cases') : undefined}
             />
           )}
 
@@ -744,6 +731,7 @@ export default function App() {
               currentUser={currentUser}
               hospitals={hospitals}
               deals={deals}
+              officeCases={officeCases}
               globalSearch={globalSearch}
               preselectedHospitalForDeal={preselectedHospitalForDeal}
               openAddHospitalSignal={openAddHospitalSignal}

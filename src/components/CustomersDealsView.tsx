@@ -1,10 +1,15 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Building2,
+  ChevronLeft,
+  ChevronRight,
   Edit3,
+  Link2,
+  Loader2,
   Lock,
   MapPin,
   Plus,
+  RefreshCw,
   Search,
   Trash2,
   X,
@@ -22,8 +27,10 @@ import {
   type Deal,
   type DealStage,
   type Hospital,
+  type HospitalCategoryCode,
   type HospitalStatus,
   type HospitalType,
+  type OfficeCase,
   type ProductCategory,
   type RegionName,
   type UserProfile,
@@ -32,11 +39,18 @@ import { getFriendlyFirestoreError } from '../firebase';
 import {
   createDeal,
   createHospital,
+  createHospitalsBatch,
   deleteDeal,
   deleteHospital,
   updateDeal,
   updateHospital,
+  type HospitalInput,
 } from '../services/crmService';
+import {
+  matchCatalogHospitalByName,
+  normalizeHospitalNameKey,
+  THAILAND_HOSPITALS_CATALOG,
+} from '../data/thailandHospitalsCatalog';
 import {
   HospitalPlaceAutocomplete,
   type SelectedHospitalPlace,
@@ -46,6 +60,7 @@ interface CustomersDealsViewProps {
   currentUser: UserProfile;
   hospitals: Hospital[];
   deals: Deal[];
+  officeCases: OfficeCase[];
   globalSearch?: string;
   preselectedHospitalForDeal: Hospital | null;
   openAddHospitalSignal: number;
@@ -57,10 +72,48 @@ interface CustomersDealsViewProps {
   onNotifyToast: (msg: string) => void;
 }
 
+interface UnifiedPartnerHospital {
+  /** Stable key: Firestore hospital.id if saved in CRM, or "linked:<catalogId|normKey>" if derived live from officeCases */
+  key: string;
+  crmHospital?: Hospital;
+  savedInCrm: boolean;
+  mapTargetId?: string;
+  placeId: string;
+  name: string;
+  address: string;
+  province: string;
+  region: RegionName;
+  lat: number;
+  lng: number;
+  hospitalType: HospitalType;
+  status: HospitalStatus;
+  crmCases: number;
+  officeCasesCount: number;
+  totalCases: number;
+  crmRevenue: number;
+  officeRevenue: number;
+  totalRevenue: number;
+  activeDealsCount: number;
+  contactName: string;
+  contactRole: string;
+  contactPhone: string;
+  ownerName: string;
+  latestDoctor: string;
+  latestReceiver: string;
+  notes: string;
+}
+
+function mapCategoryCodeToHospitalType(code?: HospitalCategoryCode): HospitalType {
+  if (code === 2) return 'โรงพยาบาลเอกชน';
+  if (code === 3) return 'คลินิกเฉพาะทาง';
+  return 'โรงพยาบาลรัฐ';
+}
+
 export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
   currentUser,
   hospitals,
   deals,
+  officeCases,
   globalSearch = '',
   preselectedHospitalForDeal,
   openAddHospitalSignal,
@@ -71,10 +124,12 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
   onJumpToMap,
   onNotifyToast,
 }) => {
-  const [subTab, setSubTab] = useState<'deals' | 'hospitals'>('deals');
+  const [subTab, setSubTab] = useState<'deals' | 'hospitals'>('hospitals');
   const [search, setSearch] = useState('');
   const [stageFilter, setStageFilter] = useState<'all' | DealStage>('all');
   const [regionFilter, setRegionFilter] = useState<'all' | RegionName>('all');
+  const [hospitalPage, setHospitalPage] = useState(1);
+  const [hospitalPageSize, setHospitalPageSize] = useState<25 | 50 | 100>(50);
 
   // Modals
   const [showHospitalModal, setShowHospitalModal] = useState(false);
@@ -82,6 +137,7 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
   const [showDealModal, setShowDealModal] = useState(false);
   const [editingDeal, setEditingDeal] = useState<Deal | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [syncingPartners, setSyncingPartners] = useState(false);
   const [updatingDealId, setUpdatingDealId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<
     | { type: 'deal'; item: Deal }
@@ -109,7 +165,7 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
     notes: '',
   });
 
-  // Deal form state
+  // Deal form state (hospitalId stores either Firestore hospital.id or UnifiedPartnerHospital.key)
   const [dealForm, setDealForm] = useState({
     title: '',
     hospitalId: '',
@@ -122,47 +178,270 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
     notes: '',
   });
 
+  // 1. Aggregate live Office Cases (including Excel imports) grouped by matched catalog ID / normalized name
+  const officeHospitalGroups = useMemo(() => {
+    interface AggGroup {
+      groupKey: string;
+      catalogMatch?: (typeof THAILAND_HOSPITALS_CATALOG)[number];
+      rawName: string;
+      normKey: string;
+      count: number;
+      revenue: number;
+      latestDoctor: string;
+      latestDoctorPhone: string;
+      latestReceiver: string;
+      categoryCode: HospitalCategoryCode;
+    }
+
+    const byKey = new Map<string, AggGroup>();
+
+    for (const oc of officeCases) {
+      const rawName = (oc.hospitalName || '').trim();
+      if (!rawName || rawName === '-' || rawName.length < 2) continue;
+
+      const normKey = normalizeHospitalNameKey(rawName);
+      const catalogMatch = matchCatalogHospitalByName(rawName);
+      const groupKey = catalogMatch ? `cat:${catalogMatch.id}` : `norm:${normKey || rawName.toLowerCase()}`;
+      const rev = Number.isFinite(oc.price) ? Math.max(0, oc.price) : 0;
+
+      const existing = byKey.get(groupKey);
+      if (existing) {
+        existing.count += 1;
+        existing.revenue += rev;
+        if (!existing.latestDoctor && oc.doctorName.trim()) {
+          existing.latestDoctor = oc.doctorName.trim();
+        }
+        if (!existing.latestDoctorPhone && oc.doctorPhone.trim()) {
+          existing.latestDoctorPhone = oc.doctorPhone.trim();
+        }
+        if (!existing.latestReceiver && oc.caseReceiver.trim()) {
+          existing.latestReceiver = oc.caseReceiver.trim();
+        }
+      } else {
+        byKey.set(groupKey, {
+          groupKey,
+          catalogMatch,
+          rawName,
+          normKey,
+          count: 1,
+          revenue: rev,
+          latestDoctor: oc.doctorName.trim(),
+          latestDoctorPhone: oc.doctorPhone.trim(),
+          latestReceiver: oc.caseReceiver.trim(),
+          categoryCode: oc.hospitalCategory || 1,
+        });
+      }
+    }
+
+    return byKey;
+  }, [officeCases]);
+
+  // 2. Build unified Partner Hospitals list: Saved CRM Hospitals + Live Linked Office Cases Hospitals (ZERO double-counting)
+  const partnerHospitals: UnifiedPartnerHospital[] = useMemo(() => {
+    const consumedGroupKeys = new Set<string>();
+    const list: UnifiedPartnerHospital[] = [];
+
+    // First: all saved CRM hospitals, enriched with live linked officeCases
+    for (const h of hospitals) {
+      const catalogMatch =
+        THAILAND_HOSPITALS_CATALOG.find((c) => c.id === h.placeId) ||
+        matchCatalogHospitalByName(h.name);
+      const normKey = normalizeHospitalNameKey(h.name);
+
+      const matchedGroup =
+        (catalogMatch && officeHospitalGroups.get(`cat:${catalogMatch.id}`)) ||
+        (normKey && officeHospitalGroups.get(`norm:${normKey}`)) ||
+        officeHospitalGroups.get(`norm:${h.name.trim().toLowerCase()}`);
+
+      if (matchedGroup) {
+        consumedGroupKeys.add(matchedGroup.groupKey);
+      }
+
+      const officeCasesCount = matchedGroup?.count || 0;
+      const officeRevenue = matchedGroup?.revenue || 0;
+      const crmCases = h.caseCount || 0;
+      const crmRevenue = h.totalRevenue || 0;
+      const totalCases = crmCases + officeCasesCount;
+      const totalRevenue = crmRevenue + officeRevenue;
+      const computedStatus: HospitalStatus =
+        totalCases >= 30
+          ? 'high_priority'
+          : totalCases > 0 && h.status === 'prospect'
+            ? 'active'
+            : h.status;
+
+      list.push({
+        key: h.id,
+        crmHospital: h,
+        savedInCrm: true,
+        mapTargetId: h.id,
+        placeId: h.placeId || catalogMatch?.id || '',
+        name: h.name,
+        address: h.address || catalogMatch?.address || '',
+        province: h.province || catalogMatch?.province || 'ประเทศไทย',
+        region: h.region || catalogMatch?.region || 'ภาคกลาง',
+        lat: h.lat || catalogMatch?.lat || 13.7563,
+        lng: h.lng || catalogMatch?.lng || 100.5018,
+        hospitalType: h.hospitalType || catalogMatch?.hospitalType || 'โรงพยาบาลรัฐ',
+        status: computedStatus,
+        crmCases,
+        officeCasesCount,
+        totalCases,
+        crmRevenue,
+        officeRevenue,
+        totalRevenue,
+        activeDealsCount: h.activeDealsCount || 0,
+        contactName: h.contactName || matchedGroup?.latestDoctor || '',
+        contactRole: h.contactRole || (matchedGroup?.latestDoctor ? 'แพทย์ผู้ผ่าตัด' : ''),
+        contactPhone: h.contactPhone || matchedGroup?.latestDoctorPhone || '',
+        ownerName: h.ownerName || matchedGroup?.latestReceiver || 'ทีมขาย CTEC',
+        latestDoctor: matchedGroup?.latestDoctor || '',
+        latestReceiver: matchedGroup?.latestReceiver || '',
+        notes: h.notes || '',
+      });
+    }
+
+    // Second: partner hospitals present in imported Excel / Office Cases not yet saved in CRM hospitals collection
+    for (const group of officeHospitalGroups.values()) {
+      if (consumedGroupKeys.has(group.groupKey)) continue;
+
+      const cat = group.catalogMatch;
+      const displayName = cat?.name || group.rawName;
+      const totalCases = group.count;
+      const computedStatus: HospitalStatus =
+        totalCases >= 30 ? 'high_priority' : 'active';
+
+      list.push({
+        key: `linked:${group.groupKey}`,
+        savedInCrm: false,
+        mapTargetId: cat?.id,
+        placeId: cat?.id || '',
+        name: displayName,
+        address: cat?.address || '',
+        province: cat?.province || 'เชื่อมจากข้อมูลเคส',
+        region: cat?.region || 'ภาคกลาง',
+        lat: cat?.lat ?? 13.7563,
+        lng: cat?.lng ?? 100.5018,
+        hospitalType: cat?.hospitalType || mapCategoryCodeToHospitalType(group.categoryCode),
+        status: computedStatus,
+        crmCases: 0,
+        officeCasesCount: group.count,
+        totalCases,
+        crmRevenue: 0,
+        officeRevenue: group.revenue,
+        totalRevenue: group.revenue,
+        activeDealsCount: 0,
+        contactName: group.latestDoctor,
+        contactRole: group.latestDoctor ? 'แพทย์ผู้ผ่าตัด (จากเคสออฟฟิศ)' : '',
+        contactPhone: group.latestDoctorPhone,
+        ownerName: group.latestReceiver || 'ข้อมูลเคสออฟฟิศ',
+        latestDoctor: group.latestDoctor,
+        latestReceiver: group.latestReceiver,
+        notes: `เชื่อมต่ออัตโนมัติจากข้อมูลเคสออฟฟิศ (${group.rawName})`,
+      });
+    }
+
+    return list.sort((a, b) => {
+      if (b.totalCases !== a.totalCases) return b.totalCases - a.totalCases;
+      if (b.totalRevenue !== a.totalRevenue) return b.totalRevenue - a.totalRevenue;
+      return a.name.localeCompare(b.name, 'th');
+    });
+  }, [hospitals, officeHospitalGroups]);
+
+  const unsyncedPartners = useMemo(
+    () => partnerHospitals.filter((p) => !p.savedInCrm),
+    [partnerHospitals]
+  );
+
+  const unsyncedCasesTotal = useMemo(
+    () => unsyncedPartners.reduce((sum, p) => sum + p.officeCasesCount, 0),
+    [unsyncedPartners]
+  );
+
+  const buildHospitalInputFromPartner = (p: UnifiedPartnerHospital): HospitalInput => ({
+    name: p.name,
+    placeId: p.placeId,
+    address: p.address,
+    province: p.province === 'เชื่อมจากข้อมูลเคส' ? '' : p.province,
+    region: p.region,
+    lat: p.lat,
+    lng: p.lng,
+    hospitalType: p.hospitalType,
+    // Keep Firestore caseCount/totalRevenue at 0 so live officeCases aggregation never double-counts
+    caseCount: 0,
+    totalRevenue: 0,
+    activeDealsCount: 0,
+    status: p.totalCases >= 30 ? 'high_priority' : 'active',
+    contactName: p.contactName,
+    contactRole: p.contactRole || 'ฝ่ายจัดซื้อเครื่องมือแพทย์',
+    contactPhone: p.contactPhone,
+    notes: p.notes,
+  });
+
   // Sync external signals and consume immediately so revisiting the tab does not re-open modals
-  React.useEffect(() => {
+  useEffect(() => {
     if (openAddHospitalSignal > 0) {
       openNewHospitalModal();
       onConsumedAddHospitalSignal?.();
     }
   }, [openAddHospitalSignal]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (openAddDealSignal > 0) {
       openNewDealModal(preselectedHospitalForDeal || undefined);
       onConsumedAddDealSignal?.();
     }
   }, [openAddDealSignal]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (preselectedHospitalForDeal) {
       openNewDealModal(preselectedHospitalForDeal);
       onClearPreselectedHospital();
     }
   }, [preselectedHospitalForDeal]);
 
-  const openNewHospitalModal = () => {
+  const openNewHospitalModal = (prefillPartner?: UnifiedPartnerHospital) => {
     setEditingHospital(null);
-    setHospForm({
-      name: '',
-      placeId: '',
-      address: '',
-      province: 'กรุงเทพมหานคร',
-      region: 'กรุงเทพและปริมณฑล',
-      lat: 13.7563,
-      lng: 100.5018,
-      hospitalType: 'โรงเรียนแพทย์',
-      caseCount: 0,
-      totalRevenue: 0,
-      status: 'prospect',
-      contactName: '',
-      contactRole: 'ฝ่ายจัดซื้อเครื่องมือแพทย์',
-      contactPhone: '',
-      notes: '',
-    });
+    if (prefillPartner) {
+      setHospForm({
+        name: prefillPartner.name,
+        placeId: prefillPartner.placeId,
+        address: prefillPartner.address,
+        province:
+          prefillPartner.province === 'เชื่อมจากข้อมูลเคส'
+            ? ''
+            : prefillPartner.province,
+        region: prefillPartner.region,
+        lat: prefillPartner.lat,
+        lng: prefillPartner.lng,
+        hospitalType: prefillPartner.hospitalType,
+        caseCount: 0,
+        totalRevenue: 0,
+        status: prefillPartner.totalCases >= 30 ? 'high_priority' : 'active',
+        contactName: prefillPartner.contactName,
+        contactRole: prefillPartner.contactRole || 'ฝ่ายจัดซื้อเครื่องมือแพทย์',
+        contactPhone: prefillPartner.contactPhone,
+        notes: prefillPartner.notes,
+      });
+    } else {
+      setHospForm({
+        name: '',
+        placeId: '',
+        address: '',
+        province: 'กรุงเทพมหานคร',
+        region: 'กรุงเทพและปริมณฑล',
+        lat: 13.7563,
+        lng: 100.5018,
+        hospitalType: 'โรงเรียนแพทย์',
+        caseCount: 0,
+        totalRevenue: 0,
+        status: 'prospect',
+        contactName: '',
+        contactRole: 'ฝ่ายจัดซื้อเครื่องมือแพทย์',
+        contactPhone: '',
+        notes: '',
+      });
+    }
     setShowHospitalModal(true);
   };
 
@@ -188,12 +467,20 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
     setShowHospitalModal(true);
   };
 
-  const openNewDealModal = (hospital?: Hospital) => {
+  const openNewDealModal = (hospitalOrKey?: Hospital | string) => {
     setEditingDeal(null);
-    const defaultHosp = hospital || hospitals[0];
+    let defaultKey = '';
+    if (typeof hospitalOrKey === 'string') {
+      defaultKey = hospitalOrKey;
+    } else if (hospitalOrKey) {
+      defaultKey = hospitalOrKey.id;
+    } else {
+      defaultKey = partnerHospitals[0]?.key || hospitals[0]?.id || '';
+    }
+
     setDealForm({
       title: '',
-      hospitalId: defaultHosp?.id || '',
+      hospitalId: defaultKey,
       productCategory: PRODUCT_CATEGORIES[0],
       amount: 350000,
       caseVolume: 10,
@@ -236,11 +523,27 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
     }));
   };
 
+  const handleSyncAllPartnerHospitals = async () => {
+    if (syncingPartners || unsyncedPartners.length === 0) return;
+    setSyncingPartners(true);
+    try {
+      const inputs = unsyncedPartners.map(buildHospitalInputFromPartner);
+      const count = await createHospitalsBatch(inputs, currentUser);
+      onNotifyToast(
+        `ซิงก์โรงพยาบาลคู่ค้าเข้าทะเบียน CRM เรียบร้อยแล้ว ${count.toLocaleString('th-TH')} แห่ง`
+      );
+    } catch (err) {
+      onNotifyToast(getFriendlyFirestoreError(err, 'ไม่สามารถซิงก์โรงพยาบาลคู่ค้าได้'));
+    } finally {
+      setSyncingPartners(false);
+    }
+  };
+
   const handleSaveHospital = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmedName = hospForm.name.trim();
     if (trimmedName.length < 2) {
-      onNotifyToast('กรุณาระบุชื่อโรงพยาบาลอย่างน้อย 2 ตัวอักษร');
+      onNotifyToast('กรุณาระบุชื่อโรงพยาบาลคู่ค้าอย่างน้อย 2 ตัวอักษร');
       return;
     }
 
@@ -275,11 +578,11 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
           },
           currentUser
         );
-        onNotifyToast(`เพิ่มโรงพยาบาล "${trimmedName}" เข้าระบบเรียบร้อยแล้ว`);
+        onNotifyToast(`เพิ่มโรงพยาบาลคู่ค้า "${trimmedName}" เข้าระบบเรียบร้อยแล้ว`);
       }
       setShowHospitalModal(false);
     } catch (err) {
-      onNotifyToast(getFriendlyFirestoreError(err, 'ไม่สามารถบันทึกข้อมูลโรงพยาบาลได้'));
+      onNotifyToast(getFriendlyFirestoreError(err, 'ไม่สามารถบันทึกข้อมูลโรงพยาบาลคู่ค้าได้'));
     } finally {
       setSubmitting(false);
     }
@@ -287,10 +590,9 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
 
   const handleSaveDeal = async (e: React.FormEvent) => {
     e.preventDefault();
-    const targetHospital = hospitals.find((h) => h.id === dealForm.hospitalId);
     const trimmedTitle = dealForm.title.trim();
-    if (!targetHospital) {
-      onNotifyToast('กรุณาเลือกโรงพยาบาลลูกค้าก่อนบันทึก');
+    if (!dealForm.hospitalId) {
+      onNotifyToast('กรุณาเลือกโรงพยาบาลคู่ค้าก่อนบันทึก');
       return;
     }
     if (trimmedTitle.length < 2) {
@@ -298,8 +600,36 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
       return;
     }
 
+    const selectedPartner = partnerHospitals.find((p) => p.key === dealForm.hospitalId);
+    let targetHospital = hospitals.find((h) => h.id === dealForm.hospitalId);
+
+    if (!targetHospital && !selectedPartner) {
+      onNotifyToast('ไม่พบโรงพยาบาลคู่ค้าที่เลือก กรุณาเลือกใหม่อีกครั้ง');
+      return;
+    }
+
     setSubmitting(true);
     try {
+      // Auto-register partner hospital from imported Excel/Office Cases into CRM hospitals on demand
+      if (!targetHospital && selectedPartner) {
+        const input = buildHospitalInputFromPartner(selectedPartner);
+        const createdId = await createHospital(input, currentUser);
+        targetHospital = {
+          id: createdId,
+          orgId: 'ctec-medical',
+          ...input,
+          ownerId: currentUser.uid,
+          ownerName: currentUser.displayName,
+          createdAt: null,
+          updatedAt: null,
+        };
+      }
+
+      if (!targetHospital) {
+        onNotifyToast('ไม่สามารถเชื่อมต่อโรงพยาบาลคู่ค้าได้');
+        return;
+      }
+
       if (editingDeal) {
         await updateDeal(
           editingDeal,
@@ -403,20 +733,40 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
     });
   }, [deals, effectiveSearch, stageFilter]);
 
-  const filteredHospitals = useMemo(() => {
-    return hospitals
-      .filter((h) => {
-        if (regionFilter !== 'all' && h.region !== regionFilter) return false;
-        if (!effectiveSearch) return true;
-        return (
-          h.name.toLowerCase().includes(effectiveSearch) ||
-          h.province.toLowerCase().includes(effectiveSearch) ||
-          h.contactName.toLowerCase().includes(effectiveSearch) ||
-          h.ownerName.toLowerCase().includes(effectiveSearch)
-        );
-      })
-      .sort((a, b) => b.caseCount - a.caseCount);
-  }, [hospitals, effectiveSearch, regionFilter]);
+  const filteredPartners = useMemo(() => {
+    return partnerHospitals.filter((p) => {
+      if (regionFilter !== 'all' && p.region !== regionFilter) return false;
+      if (!effectiveSearch) return true;
+      return (
+        p.name.toLowerCase().includes(effectiveSearch) ||
+        p.province.toLowerCase().includes(effectiveSearch) ||
+        p.contactName.toLowerCase().includes(effectiveSearch) ||
+        p.ownerName.toLowerCase().includes(effectiveSearch) ||
+        p.latestDoctor.toLowerCase().includes(effectiveSearch)
+      );
+    });
+  }, [partnerHospitals, effectiveSearch, regionFilter]);
+
+  useEffect(() => {
+    setHospitalPage(1);
+  }, [effectiveSearch, regionFilter, hospitalPageSize]);
+
+  const totalHospitalPages = Math.max(
+    1,
+    Math.ceil(filteredPartners.length / hospitalPageSize)
+  );
+  const safeHospitalPage = Math.min(hospitalPage, totalHospitalPages);
+  const paginatedPartners = useMemo(() => {
+    const start = (safeHospitalPage - 1) * hospitalPageSize;
+    return filteredPartners.slice(start, start + hospitalPageSize);
+  }, [filteredPartners, safeHospitalPage, hospitalPageSize]);
+
+  const hospitalRangeStart =
+    filteredPartners.length === 0 ? 0 : (safeHospitalPage - 1) * hospitalPageSize + 1;
+  const hospitalRangeEnd = Math.min(
+    safeHospitalPage * hospitalPageSize,
+    filteredPartners.length
+  );
 
   const isAdmin = currentUser.role === 'admin';
   const isManagerOrAbove =
@@ -430,26 +780,26 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-            จัดการลูกค้าโรงพยาบาลและติดตามสถานะการขาย
+            จัดการโรงพยาบาลคู่ค้าและติดตามสถานะการขาย
           </h1>
           <p className="text-xs sm:text-sm text-[#e3beb3]/75 mt-1">
-            อัปเดตขั้นตอนการขาย ซิงก์ปริมาณเคสผ่าตัดเข้าแผนที่ความหนาแน่น และบันทึกข้อมูลผู้ติดต่อ
+            เชื่อมต่อข้อมูลโรงพยาบาลคู่ค้าอัตโนมัติจากเคสออฟฟิศ/Excel พร้อมซิงก์เคสสะสมเข้าแผนที่ 77 จังหวัด
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={openNewHospitalModal}
+            onClick={() => openNewHospitalModal()}
             className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#dfe2ef] bg-white/[0.06] hover:bg-white/[0.11] border border-white/[0.1] rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Building2 className="w-4 h-4 text-[#ffb59d]" />
-            เพิ่มโรงพยาบาล
+            เพิ่มโรงพยาบาลคู่ค้า
           </button>
           <button
             type="button"
             onClick={() => openNewDealModal()}
-            disabled={hospitals.length === 0}
+            disabled={partnerHospitals.length === 0}
             className="orange-cta min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold disabled:opacity-50 rounded-xl whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
@@ -458,20 +808,51 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
         </div>
       </div>
 
+      {/* Live Sync Banner when officeCases contain partner hospitals not yet saved in CRM */}
+      {unsyncedPartners.length > 0 && (
+        <div className="apple-glass-subtle rounded-2xl p-3.5 sm:p-4 border border-[#ff9457]/30 bg-[#ff6b2b]/[0.07] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-[#ff6b2b]/20 border border-[#ff9457]/35 flex items-center justify-center shrink-0 mt-0.5">
+              <Link2 className="w-4 h-4 text-[#ffb59d]" />
+            </div>
+            <div className="space-y-0.5">
+              <div className="text-xs sm:text-sm font-semibold text-white">
+                เชื่อมต่อโรงพยาบาลคู่ค้าอัตโนมัติจากข้อมูลที่นำเข้าแล้ว{' '}
+                <span className="font-mono tabular-nums text-[#ffcf90]">
+                  {unsyncedPartners.length.toLocaleString('th-TH')} แห่ง
+                </span>{' '}
+                (รวม {unsyncedCasesTotal.toLocaleString('th-TH')} เคส)
+              </div>
+              <p className="text-xs text-[#e3beb3]/80">
+                สามารถเปิดดูและสร้างดีลได้ทันที หรือกดซิงก์เพื่อบันทึกรายชื่อโรงพยาบาลคู่ค้าทั้งหมดลงฐานข้อมูล CRM ถาวร
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            disabled={syncingPartners}
+            onClick={() => void handleSyncAllPartnerHospitals()}
+            className="orange-cta px-3.5 py-2 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 self-start sm:self-center"
+          >
+            {syncingPartners ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                กำลังซิงก์...
+              </>
+            ) : (
+              <>
+                <RefreshCw className="w-3.5 h-3.5" />
+                ซิงก์เข้าทะเบียน CRM ({unsyncedPartners.length.toLocaleString('th-TH')} แห่ง)
+              </>
+            )}
+          </button>
+        </div>
+      )}
+
       {/* Sub-navigation & Filters */}
       <div className="apple-glass-subtle rounded-2xl p-3.5 sm:p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
         <div className="inline-flex items-center p-1 bg-[#0a0e17]/80 border border-white/[0.07] rounded-xl self-start">
-          <button
-            type="button"
-            onClick={() => setSubTab('deals')}
-            className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-              subTab === 'deals'
-                ? 'bg-[#262a34] text-[#ffb59d] ring-1 ring-[#ffb59d]/30'
-                : 'text-[#e3beb3]/70 hover:text-white'
-            }`}
-          >
-            ติดตามสถานะการขาย ({deals.length})
-          </button>
           <button
             type="button"
             onClick={() => setSubTab('hospitals')}
@@ -481,7 +862,18 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
                 : 'text-[#e3beb3]/70 hover:text-white'
             }`}
           >
-            ทะเบียนโรงพยาบาล ({hospitals.length})
+            โรงพยาบาลคู่ค้า ({partnerHospitals.length.toLocaleString('th-TH')})
+          </button>
+          <button
+            type="button"
+            onClick={() => setSubTab('deals')}
+            className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+              subTab === 'deals'
+                ? 'bg-[#262a34] text-[#ffb59d] ring-1 ring-[#ffb59d]/30'
+                : 'text-[#e3beb3]/70 hover:text-white'
+            }`}
+          >
+            ติดตามสถานะการขาย ({deals.length.toLocaleString('th-TH')})
           </button>
         </div>
 
@@ -494,8 +886,8 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
               onChange={(e) => setSearch(e.target.value)}
               placeholder={
                 subTab === 'deals'
-                  ? 'ค้นหาชื่อดีล โรงพยาบาล หรือผู้แทนขาย...'
-                  : 'ค้นหาชื่อโรงพยาบาล จังหวัด หรือผู้ติดต่อ...'
+                  ? 'ค้นหาชื่อดีล โรงพยาบาลคู่ค้า หรือผู้แทนขาย...'
+                  : 'ค้นหาโรงพยาบาลคู่ค้า จังหวัด แพทย์ หรือผู้ติดต่อ...'
               }
               className="glass-input w-full h-9 pl-9 pr-3 text-xs rounded-xl"
             />
@@ -537,22 +929,26 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
           {filteredDeals.length === 0 ? (
             <div className="p-10 text-center space-y-3">
               <div className="text-sm font-semibold text-white">
-                {hospitals.length === 0
-                  ? 'กรุณาเพิ่มข้อมูลโรงพยาบาลก่อนสร้างรายการขาย'
+                {partnerHospitals.length === 0
+                  ? 'กรุณาเพิ่มข้อมูลโรงพยาบาลคู่ค้าหรือนำเข้าเคสก่อนสร้างรายการขาย'
                   : 'ยังไม่มีรายการติดตามการขายตามเงื่อนไขที่เลือก'}
               </div>
               <p className="text-xs text-[#e3beb3]/70">
-                {hospitals.length === 0
-                  ? 'คุณสามารถกดปุ่มเพิ่มโรงพยาบาลด้านบน หรือเลือกเพิ่มโรงพยาบาลจากแผนที่ 77 จังหวัดทั่วประเทศ'
-                  : 'กดปุ่ม "เพิ่มดีล / เคสใหม่" เพื่อเริ่มติดตามโอกาสทางการขายและอัปเดตยอดขายรายวัน'}
+                {partnerHospitals.length === 0
+                  ? 'คุณสามารถกดปุ่มเพิ่มโรงพยาบาลคู่ค้าด้านบน หรือนำเข้าข้อมูลจาก Excel ในเมนูเคสออฟฟิศ'
+                  : `พร้อมเชื่อมกับโรงพยาบาลคู่ค้าในระบบ ${partnerHospitals.length.toLocaleString('th-TH')} แห่ง — กดปุ่ม "เพิ่มดีล / เคสใหม่" เพื่อเริ่มติดตามการขายได้ทันที`}
               </p>
               <button
                 type="button"
-                onClick={hospitals.length === 0 ? openNewHospitalModal : () => openNewDealModal()}
+                onClick={
+                  partnerHospitals.length === 0
+                    ? () => openNewHospitalModal()
+                    : () => openNewDealModal()
+                }
                 className="orange-cta inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-xl cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
-                {hospitals.length === 0 ? 'เพิ่มโรงพยาบาลแห่งแรก' : 'สร้างดีลแรก'}
+                {partnerHospitals.length === 0 ? 'เพิ่มโรงพยาบาลคู่ค้าแห่งแรก' : 'สร้างดีลแรก'}
               </button>
             </div>
           ) : (
@@ -642,7 +1038,7 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
                 <table className="w-full text-left border-collapse min-w-[820px]">
                   <thead>
                     <tr className="bg-white/[0.03] border-b border-white/[0.07] text-[11px] font-semibold uppercase tracking-wider text-[#e3beb3]/70">
-                      <th className="py-3.5 px-5">รายการขาย / โรงพยาบาล</th>
+                      <th className="py-3.5 px-5">รายการขาย / โรงพยาบาลคู่ค้า</th>
                       <th className="py-3.5 px-4">กลุ่มผลิตภัณฑ์ CTEC</th>
                       <th className="py-3.5 px-4 text-right">มูลค่า (บาท)</th>
                       <th className="py-3.5 px-4 text-right">เคส</th>
@@ -749,41 +1145,59 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
         </section>
       )}
 
-      {/* Content View: Hospitals */}
+      {/* Content View: Partner Hospitals (Unified CRM + Live Linked Office Cases) */}
       {subTab === 'hospitals' && (
         <section className="apple-glass rounded-2xl overflow-hidden">
-          {filteredHospitals.length === 0 ? (
+          {filteredPartners.length === 0 ? (
             <div className="p-10 text-center space-y-3">
               <div className="text-sm font-semibold text-white">
-                ยังไม่มีรายชื่อโรงพยาบาลในระบบ
+                {partnerHospitals.length === 0
+                  ? 'ยังไม่มีรายชื่อโรงพยาบาลคู่ค้าในระบบ'
+                  : 'ไม่พบโรงพยาบาลคู่ค้าตามคำค้นหาหรือภูมิภาคที่เลือก'}
               </div>
               <p className="text-xs text-[#e3beb3]/70">
-                เพิ่มโรงพยาบาลจากฐานข้อมูล 77 จังหวัดทั่วประเทศ หรือนำเข้าโรงพยาบาลจากหน้าแผนที่ออฟไลน์
+                {partnerHospitals.length === 0
+                  ? 'เพิ่มโรงพยาบาลคู่ค้าใหม่ หรือนำเข้าไฟล์ Excel ในเมนูเคสออฟฟิศ ระบบจะเชื่อมรายชื่อมาแสดงที่นี่อัตโนมัติ'
+                  : 'ลองล้างคำค้นหาหรือเลือกทุกภูมิภาค'}
               </p>
-              <button
-                type="button"
-                onClick={openNewHospitalModal}
-                className="orange-cta inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-xl cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                เพิ่มโรงพยาบาลใหม่
-              </button>
+              {partnerHospitals.length === 0 && (
+                <button
+                  type="button"
+                  onClick={() => openNewHospitalModal()}
+                  className="orange-cta inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-xl cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  เพิ่มโรงพยาบาลคู่ค้าใหม่
+                </button>
+              )}
             </div>
           ) : (
             <>
-              {/* Mobile Hospital Cards */}
+              {/* Mobile Partner Hospital Cards */}
               <div className="divide-y divide-white/[0.06] md:hidden">
-                {filteredHospitals.map((h) => {
-                  const density = getDensityMeta(h.caseCount);
-                  const tier = getDensityTierLabel(h.caseCount);
-                  const canEdit = isManagerOrAbove || h.ownerId === currentUser.uid;
+                {paginatedPartners.map((p) => {
+                  const density = getDensityMeta(p.totalCases);
+                  const tier = getDensityTierLabel(p.totalCases);
+                  const canEditCrm =
+                    p.crmHospital && (isManagerOrAbove || p.crmHospital.ownerId === currentUser.uid);
+
                   return (
-                    <div key={h.id} className="p-4 space-y-2.5">
+                    <div key={p.key} className="p-4 space-y-2.5">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <div className="text-sm font-semibold text-white">{h.name}</div>
+                          <div className="text-sm font-semibold text-white">{p.name}</div>
                           <div className="text-xs text-[#e3beb3]/70 mt-0.5">
-                            {h.province || '-'} · {h.region}
+                            {p.province || '-'} · {p.region}
+                          </div>
+                          <div className="text-[11px] mt-0.5 flex flex-wrap items-center gap-1.5">
+                            {p.officeCasesCount > 0 && (
+                              <span className="text-[#ffb59d]">
+                                เชื่อมเคสออฟฟิศ {p.officeCasesCount.toLocaleString('th-TH')} เคส
+                              </span>
+                            )}
+                            {!p.savedInCrm && (
+                              <span className="text-sky-300">· ยังไม่บันทึกใน CRM</span>
+                            )}
                           </div>
                         </div>
                         <div className="text-right shrink-0">
@@ -791,40 +1205,55 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
                             className="text-sm font-bold font-mono tabular-nums"
                             style={{ color: density.color }}
                           >
-                            {h.caseCount.toLocaleString('th-TH')} เคส
+                            {p.totalCases.toLocaleString('th-TH')} เคส
                           </div>
-                          <div className={`text-[10px] font-semibold uppercase tracking-wider ${tier.textClass}`}>
+                          <div
+                            className={`text-[10px] font-semibold uppercase tracking-wider ${tier.textClass}`}
+                          >
                             {tier.label}
                           </div>
                         </div>
                       </div>
                       <div className="flex items-center justify-between gap-2 pt-1 text-xs">
                         <span className="font-mono tabular-nums font-semibold text-[#ffcf90]">
-                          {formatCurrency(h.totalRevenue)}
+                          {formatCurrency(p.totalRevenue)}
                         </span>
                         <div className="inline-flex items-center gap-1">
+                          {p.mapTargetId && (
+                            <button
+                              type="button"
+                              onClick={() => onJumpToMap(p.mapTargetId!)}
+                              aria-label="ดูบนแผนที่"
+                              className="p-2 rounded-lg text-[#e3beb3]/75 hover:text-[#ffb59d] hover:bg-white/[0.06] cursor-pointer"
+                            >
+                              <MapPin className="w-4 h-4" />
+                            </button>
+                          )}
                           <button
                             type="button"
-                            onClick={() => onJumpToMap(h.id)}
-                            aria-label="ดูบนแผนที่"
-                            className="p-2 rounded-lg text-[#e3beb3]/75 hover:text-[#ffb59d] hover:bg-white/[0.06] cursor-pointer"
-                          >
-                            <MapPin className="w-4 h-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => openNewDealModal(h)}
+                            onClick={() => openNewDealModal(p.key)}
                             aria-label="เพิ่มดีล"
                             className="p-2 rounded-lg text-[#e3beb3]/75 hover:text-[#ffb59d] hover:bg-white/[0.06] cursor-pointer"
                           >
                             <Plus className="w-4 h-4" />
                           </button>
-                          {canEdit && (
+                          {p.crmHospital ? (
+                            canEditCrm && (
+                              <button
+                                type="button"
+                                onClick={() => openEditHospitalModal(p.crmHospital!)}
+                                aria-label="แก้ไขโรงพยาบาลคู่ค้า"
+                                className="p-2 rounded-lg text-[#e3beb3]/75 hover:text-[#ffb59d] hover:bg-white/[0.06] cursor-pointer"
+                              >
+                                <Edit3 className="w-4 h-4" />
+                              </button>
+                            )
+                          ) : (
                             <button
                               type="button"
-                              onClick={() => openEditHospitalModal(h)}
-                              aria-label="แก้ไขโรงพยาบาล"
-                              className="p-2 rounded-lg text-[#e3beb3]/75 hover:text-[#ffb59d] hover:bg-white/[0.06] cursor-pointer"
+                              onClick={() => openNewHospitalModal(p)}
+                              aria-label="บันทึกลงทะเบียน CRM"
+                              className="p-2 rounded-lg text-sky-300 hover:text-sky-200 hover:bg-white/[0.06] cursor-pointer"
                             >
                               <Edit3 className="w-4 h-4" />
                             </button>
@@ -838,34 +1267,44 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
 
               {/* Desktop Table */}
               <div className="hidden md:block overflow-x-auto">
-                <table className="w-full text-left border-collapse min-w-[820px]">
+                <table className="w-full text-left border-collapse min-w-[860px]">
                   <thead>
                     <tr className="bg-white/[0.03] border-b border-white/[0.07] text-[11px] font-semibold uppercase tracking-wider text-[#e3beb3]/70">
-                      <th className="py-3.5 px-5">ชื่อโรงพยาบาล / ที่ตั้ง</th>
+                      <th className="py-3.5 px-5">โรงพยาบาลคู่ค้า / ที่ตั้ง</th>
                       <th className="py-3.5 px-4">ประเภท / สถานะ</th>
                       <th className="py-3.5 px-4 text-right">เคสสะสม</th>
                       <th className="py-3.5 px-4 text-right">ยอดขายสะสม</th>
-                      <th className="py-3.5 px-4">ผู้ติดต่อ / ผู้แทนขาย</th>
+                      <th className="py-3.5 px-4">ผู้ติดต่อ / แพทย์ / ผู้ดูแล</th>
                       <th className="py-3.5 px-5 text-right">จัดการ</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/[0.06] text-sm">
-                    {filteredHospitals.map((h) => {
-                      const density = getDensityMeta(h.caseCount);
-                      const tier = getDensityTierLabel(h.caseCount);
-                      const canEdit = isManagerOrAbove || h.ownerId === currentUser.uid;
+                    {paginatedPartners.map((p) => {
+                      const density = getDensityMeta(p.totalCases);
+                      const tier = getDensityTierLabel(p.totalCases);
+                      const canEditCrm =
+                        p.crmHospital &&
+                        (isManagerOrAbove || p.crmHospital.ownerId === currentUser.uid);
+
                       return (
-                        <tr key={h.id} className="hover:bg-white/[0.03] transition-colors">
+                        <tr key={p.key} className="hover:bg-white/[0.03] transition-colors">
                           <td className="py-3.5 px-5">
-                            <div className="font-semibold text-white">{h.name}</div>
+                            <div className="font-semibold text-white flex items-center gap-2">
+                              <span>{p.name}</span>
+                              {!p.savedInCrm && (
+                                <span className="text-[10px] font-medium text-sky-300 whitespace-nowrap">
+                                  · เชื่อมจากเคส
+                                </span>
+                              )}
+                            </div>
                             <div className="text-xs text-[#e3beb3]/70 mt-0.5">
-                              {h.province || '-'} · {h.region}
+                              {p.province || '-'} · {p.region}
                             </div>
                           </td>
                           <td className="py-3.5 px-4 text-xs">
-                            <div className="text-[#dfe2ef]">{h.hospitalType}</div>
+                            <div className="text-[#dfe2ef]">{p.hospitalType}</div>
                             <div className="text-[#aa897f] mt-0.5">
-                              {HOSPITAL_STATUS_LABEL[h.status]}
+                              {HOSPITAL_STATUS_LABEL[p.status]}
                             </div>
                           </td>
                           <td className="py-3.5 px-4 text-right">
@@ -873,57 +1312,83 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
                               className="font-bold font-mono tabular-nums"
                               style={{ color: density.color }}
                             >
-                              {h.caseCount.toLocaleString('th-TH')} เคส
+                              {p.totalCases.toLocaleString('th-TH')} เคส
                             </div>
-                            <div className={`text-[10px] font-semibold uppercase tracking-wider ${tier.textClass}`}>
-                              {tier.label}
+                            <div
+                              className={`text-[10px] font-semibold uppercase tracking-wider ${tier.textClass}`}
+                            >
+                              {p.officeCasesCount > 0 && p.crmCases > 0
+                                ? `ออฟฟิศ ${p.officeCasesCount} · CRM ${p.crmCases}`
+                                : tier.label}
                             </div>
                           </td>
                           <td className="py-3.5 px-4 text-right font-mono tabular-nums font-semibold text-[#ffcf90]">
-                            {formatCurrency(h.totalRevenue)}
+                            {formatCurrency(p.totalRevenue)}
                           </td>
                           <td className="py-3.5 px-4 text-xs text-[#dfe2ef]">
-                            <div>{h.contactName || '-'}</div>
-                            <div className="text-[#aa897f] font-mono">
-                              {h.contactPhone || h.ownerName}
+                            <div className="truncate max-w-[200px]">
+                              {p.contactName || '-'}
+                            </div>
+                            <div className="text-[#aa897f] font-mono truncate max-w-[200px]">
+                              {p.contactPhone || p.ownerName}
                             </div>
                           </td>
                           <td className="py-3.5 px-5 text-right">
                             <div className="inline-flex items-center gap-1">
+                              {p.mapTargetId && (
+                                <button
+                                  type="button"
+                                  onClick={() => onJumpToMap(p.mapTargetId!)}
+                                  title="ดูพิกัดบนแผนที่"
+                                  className="p-2 rounded-lg text-[#e3beb3]/70 hover:text-[#ffb59d] hover:bg-white/[0.06] cursor-pointer transition-colors"
+                                >
+                                  <MapPin className="w-4 h-4" />
+                                </button>
+                              )}
                               <button
                                 type="button"
-                                onClick={() => onJumpToMap(h.id)}
-                                title="ดูพิกัดบนแผนที่"
-                                className="p-2 rounded-lg text-[#e3beb3]/70 hover:text-[#ffb59d] hover:bg-white/[0.06] cursor-pointer transition-colors"
-                              >
-                                <MapPin className="w-4 h-4" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => openNewDealModal(h)}
-                                title="เพิ่มดีลให้โรงพยาบาลนี้"
+                                onClick={() => openNewDealModal(p.key)}
+                                title="เพิ่มดีลให้โรงพยาบาลคู่ค้านี้"
                                 className="p-2 rounded-lg text-[#e3beb3]/70 hover:text-[#ffb59d] hover:bg-white/[0.06] cursor-pointer transition-colors"
                               >
                                 <Plus className="w-4 h-4" />
                               </button>
-                              {canEdit && (
+                              {p.crmHospital ? (
+                                <>
+                                  {canEditCrm && (
+                                    <button
+                                      type="button"
+                                      onClick={() => openEditHospitalModal(p.crmHospital!)}
+                                      title="แก้ไขข้อมูลโรงพยาบาลคู่ค้า"
+                                      className="p-2 rounded-lg text-[#e3beb3]/70 hover:text-[#ffb59d] hover:bg-white/[0.06] cursor-pointer transition-colors"
+                                    >
+                                      <Edit3 className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                  {isAdmin && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setPendingDelete({
+                                          type: 'hospital',
+                                          item: p.crmHospital!,
+                                        })
+                                      }
+                                      title="ลบออกจากทะเบียน CRM"
+                                      className="p-2 rounded-lg text-[#aa897f] hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer transition-colors"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                </>
+                              ) : (
                                 <button
                                   type="button"
-                                  onClick={() => openEditHospitalModal(h)}
-                                  title="แก้ไขข้อมูลโรงพยาบาล"
-                                  className="p-2 rounded-lg text-[#e3beb3]/70 hover:text-[#ffb59d] hover:bg-white/[0.06] cursor-pointer transition-colors"
+                                  onClick={() => openNewHospitalModal(p)}
+                                  title="แก้ไขและบันทึกเข้าทะเบียน CRM"
+                                  className="p-2 rounded-lg text-sky-300 hover:text-sky-200 hover:bg-sky-500/10 cursor-pointer transition-colors"
                                 >
                                   <Edit3 className="w-4 h-4" />
-                                </button>
-                              )}
-                              {isAdmin && (
-                                <button
-                                  type="button"
-                                  onClick={() => setPendingDelete({ type: 'hospital', item: h })}
-                                  title="ลบโรงพยาบาล"
-                                  className="p-2 rounded-lg text-[#aa897f] hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer transition-colors"
-                                >
-                                  <Trash2 className="w-4 h-4" />
                                 </button>
                               )}
                             </div>
@@ -934,18 +1399,77 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
                   </tbody>
                 </table>
               </div>
+
+              {/* Pagination Footer Bar for Partner Hospitals */}
+              {filteredPartners.length > 25 && (
+                <div className="px-4 py-3 border-t border-white/[0.08] bg-white/[0.02] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-[#e3beb3]/80">
+                  <div className="font-mono tabular-nums">
+                    แสดง{' '}
+                    <strong className="text-white">
+                      {hospitalRangeStart.toLocaleString('th-TH')}–
+                      {hospitalRangeEnd.toLocaleString('th-TH')}
+                    </strong>{' '}
+                    จาก{' '}
+                    <strong className="text-white">
+                      {filteredPartners.length.toLocaleString('th-TH')}
+                    </strong>{' '}
+                    โรงพยาบาลคู่ค้า
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      value={hospitalPageSize}
+                      onChange={(e) =>
+                        setHospitalPageSize(Number(e.target.value) as 25 | 50 | 100)
+                      }
+                      aria-label="จำนวนโรงพยาบาลคู่ค้าต่อหน้า"
+                      className="glass-input h-8 px-2.5 text-xs rounded-lg cursor-pointer"
+                    >
+                      <option value={25}>25 แห่ง/หน้า</option>
+                      <option value={50}>50 แห่ง/หน้า</option>
+                      <option value={100}>100 แห่ง/หน้า</option>
+                    </select>
+
+                    <div className="inline-flex items-center gap-1">
+                      <button
+                        type="button"
+                        disabled={safeHospitalPage <= 1}
+                        onClick={() => setHospitalPage((p) => Math.max(1, p - 1))}
+                        className="px-2.5 h-8 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-35"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                        ก่อนหน้า
+                      </button>
+                      <span className="px-2.5 font-mono tabular-nums text-white text-xs">
+                        หน้า {safeHospitalPage} / {totalHospitalPages}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={safeHospitalPage >= totalHospitalPages}
+                        onClick={() =>
+                          setHospitalPage((p) => Math.min(totalHospitalPages, p + 1))
+                        }
+                        className="px-2.5 h-8 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-35"
+                      >
+                        ถัดไป
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </>
           )}
         </section>
       )}
 
-      {/* Modal: Add / Edit Hospital */}
+      {/* Modal: Add / Edit Partner Hospital */}
       {showHospitalModal && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
           <div className="apple-glass rounded-2xl w-full max-w-xl shadow-2xl my-auto overflow-hidden">
             <div className="px-5 py-4 border-b border-white/[0.08] flex items-center justify-between">
               <h2 className="text-base font-bold text-white">
-                {editingHospital ? 'แก้ไขข้อมูลโรงพยาบาล' : 'เพิ่มลูกค้าโรงพยาบาลใหม่'}
+                {editingHospital ? 'แก้ไขข้อมูลโรงพยาบาลคู่ค้า' : 'เพิ่มโรงพยาบาลคู่ค้าใหม่'}
               </h2>
               <button
                 type="button"
@@ -956,7 +1480,10 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
               </button>
             </div>
 
-            <form onSubmit={handleSaveHospital} className="p-5 space-y-4 max-h-[80vh] overflow-y-auto">
+            <form
+              onSubmit={handleSaveHospital}
+              className="p-5 space-y-4 max-h-[80vh] overflow-y-auto"
+            >
               {!editingHospital && (
                 <div className="space-y-1.5">
                   <label className="block text-xs font-semibold text-[#ffb59d]">
@@ -969,7 +1496,7 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-medium text-[#e3beb3] mb-1">
-                    ชื่อโรงพยาบาล *
+                    โรงพยาบาลคู่ค้า *
                   </label>
                   <input
                     type="text"
@@ -978,28 +1505,22 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
                     maxLength={180}
                     value={hospForm.name}
                     onChange={(e) => setHospForm({ ...hospForm, name: e.target.value })}
-                    placeholder="ระบุชื่อโรงพยาบาล"
+                    placeholder="ระบุชื่อโรงพยาบาลคู่ค้า"
                     className="glass-input w-full h-10 px-3 text-sm rounded-xl"
                   />
                 </div>
 
                 <div>
                   <label className="block text-xs font-medium text-[#e3beb3] mb-1">
-                    ประเภทโรงพยาบาล
+                    จังหวัด
                   </label>
-                  <select
-                    value={hospForm.hospitalType}
-                    onChange={(e) =>
-                      setHospForm({ ...hospForm, hospitalType: e.target.value as HospitalType })
-                    }
+                  <input
+                    type="text"
+                    maxLength={80}
+                    value={hospForm.province}
+                    onChange={(e) => setHospForm({ ...hospForm, province: e.target.value })}
                     className="glass-input w-full h-10 px-3 text-sm rounded-xl"
-                  >
-                    {HOSPITAL_TYPES.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </div>
 
                 <div>
@@ -1023,20 +1544,51 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
 
                 <div>
                   <label className="block text-xs font-medium text-[#e3beb3] mb-1">
-                    จังหวัด
+                    ประเภทโรงพยาบาล
                   </label>
-                  <input
-                    type="text"
-                    maxLength={80}
-                    value={hospForm.province}
-                    onChange={(e) => setHospForm({ ...hospForm, province: e.target.value })}
+                  <select
+                    value={hospForm.hospitalType}
+                    onChange={(e) =>
+                      setHospForm({
+                        ...hospForm,
+                        hospitalType: e.target.value as HospitalType,
+                      })
+                    }
                     className="glass-input w-full h-10 px-3 text-sm rounded-xl"
-                  />
+                  >
+                    {HOSPITAL_TYPES.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div>
                   <label className="block text-xs font-medium text-[#e3beb3] mb-1">
-                    จำนวนเคสสะสม (แสดงความหนาแน่นบนแผนที่)
+                    สถานะบัญชี
+                  </label>
+                  <select
+                    value={hospForm.status}
+                    onChange={(e) =>
+                      setHospForm({
+                        ...hospForm,
+                        status: e.target.value as HospitalStatus,
+                      })
+                    }
+                    className="glass-input w-full h-10 px-3 text-sm rounded-xl"
+                  >
+                    {(Object.keys(HOSPITAL_STATUS_LABEL) as HospitalStatus[]).map((st) => (
+                      <option key={st} value={st}>
+                        {HOSPITAL_STATUS_LABEL[st]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-[#e3beb3] mb-1">
+                    เคสเพิ่มเติม (นอกเหนือจากเคสออฟฟิศ)
                   </label>
                   <input
                     type="number"
@@ -1052,7 +1604,7 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
 
                 <div>
                   <label className="block text-xs font-medium text-[#e3beb3] mb-1">
-                    ยอดขายสะสม (บาท)
+                    ยอดขายเพิ่มเติม (บาท)
                   </label>
                   <input
                     type="number"
@@ -1068,59 +1620,46 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
 
                 <div>
                   <label className="block text-xs font-medium text-[#e3beb3] mb-1">
-                    สถานะบัญชี
-                  </label>
-                  <select
-                    value={hospForm.status}
-                    onChange={(e) =>
-                      setHospForm({ ...hospForm, status: e.target.value as HospitalStatus })
-                    }
-                    className="glass-input w-full h-10 px-3 text-sm rounded-xl"
-                  >
-                    {(Object.keys(HOSPITAL_STATUS_LABEL) as HospitalStatus[]).map((st) => (
-                      <option key={st} value={st}>
-                        {HOSPITAL_STATUS_LABEL[st]}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-[#e3beb3] mb-1">
-                    ละติจูด (Lat)
+                    ละติจูด (Latitude)
                   </label>
                   <input
                     type="number"
-                    step="0.000001"
+                    step="0.0001"
                     value={hospForm.lat}
-                    onChange={(e) => setHospForm({ ...hospForm, lat: Number(e.target.value) })}
+                    onChange={(e) =>
+                      setHospForm({ ...hospForm, lat: Number(e.target.value) })
+                    }
                     className="glass-input w-full h-10 px-3 text-sm font-mono rounded-xl"
                   />
                 </div>
 
                 <div>
                   <label className="block text-xs font-medium text-[#e3beb3] mb-1">
-                    ลองจิจูด (Lng)
+                    ลองจิจูด (Longitude)
                   </label>
                   <input
                     type="number"
-                    step="0.000001"
+                    step="0.0001"
                     value={hospForm.lng}
-                    onChange={(e) => setHospForm({ ...hospForm, lng: Number(e.target.value) })}
+                    onChange={(e) =>
+                      setHospForm({ ...hospForm, lng: Number(e.target.value) })
+                    }
                     className="glass-input w-full h-10 px-3 text-sm font-mono rounded-xl"
                   />
                 </div>
 
                 <div>
                   <label className="block text-xs font-medium text-[#e3beb3] mb-1">
-                    ผู้ติดต่อ / หัวหน้าแผนก
+                    ชื่อผู้ติดต่อหลัก / แพทย์
                   </label>
                   <input
                     type="text"
                     maxLength={120}
                     value={hospForm.contactName}
-                    onChange={(e) => setHospForm({ ...hospForm, contactName: e.target.value })}
-                    placeholder="เช่น นพ. / พว. / คุณ..."
+                    onChange={(e) =>
+                      setHospForm({ ...hospForm, contactName: e.target.value })
+                    }
+                    placeholder="เช่น นพ.สมชาย / หัวหน้าฝ่ายจัดซื้อ"
                     className="glass-input w-full h-10 px-3 text-sm rounded-xl"
                   />
                 </div>
@@ -1133,7 +1672,9 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
                     type="text"
                     maxLength={40}
                     value={hospForm.contactPhone}
-                    onChange={(e) => setHospForm({ ...hospForm, contactPhone: e.target.value })}
+                    onChange={(e) =>
+                      setHospForm({ ...hospForm, contactPhone: e.target.value })
+                    }
                     placeholder="02-xxx-xxxx"
                     className="glass-input w-full h-10 px-3 text-sm font-mono rounded-xl"
                   />
@@ -1141,7 +1682,7 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
 
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-medium text-[#e3beb3] mb-1">
-                    ที่อยู่
+                    ที่อยู่โรงพยาบาล
                   </label>
                   <input
                     type="text"
@@ -1179,7 +1720,7 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
                   disabled={submitting}
                   className="orange-cta px-5 py-2 text-xs font-semibold disabled:opacity-50 rounded-xl cursor-pointer"
                 >
-                  {submitting ? 'กำลังบันทึก...' : 'บันทึกข้อมูลโรงพยาบาล'}
+                  {submitting ? 'กำลังบันทึก...' : 'บันทึกโรงพยาบาลคู่ค้า'}
                 </button>
               </div>
             </form>
@@ -1205,10 +1746,10 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
             </div>
 
             <form onSubmit={handleSaveDeal} className="p-5 space-y-4">
-              {hospitals.length === 0 && !editingDeal && (
+              {partnerHospitals.length === 0 && !editingDeal && (
                 <div className="rounded-xl bg-amber-500/10 border border-amber-400/30 p-3.5 text-xs text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                   <span>
-                    ยังไม่มีรายชื่อโรงพยาบาลในระบบ กรุณาเพิ่มโรงพยาบาลก่อนสร้างรายการขาย
+                    ยังไม่มีรายชื่อโรงพยาบาลคู่ค้าในระบบ กรุณาเพิ่มโรงพยาบาลคู่ค้าก่อนสร้างรายการขาย
                   </span>
                   <button
                     type="button"
@@ -1218,26 +1759,27 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
                     }}
                     className="orange-cta px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer shrink-0"
                   >
-                    เพิ่มโรงพยาบาลก่อน
+                    เพิ่มโรงพยาบาลคู่ค้าก่อน
                   </button>
                 </div>
               )}
 
               <div>
                 <label className="block text-xs font-medium text-[#e3beb3] mb-1">
-                  โรงพยาบาลลูกค้า *
+                  โรงพยาบาลคู่ค้า *
                 </label>
                 <select
                   required
-                  disabled={Boolean(editingDeal) || hospitals.length === 0}
+                  disabled={Boolean(editingDeal) || partnerHospitals.length === 0}
                   value={dealForm.hospitalId}
                   onChange={(e) => setDealForm({ ...dealForm, hospitalId: e.target.value })}
                   className="glass-input w-full h-10 px-3 text-sm rounded-xl disabled:opacity-60"
                 >
-                  <option value="">-- เลือกโรงพยาบาล --</option>
-                  {hospitals.map((h) => (
-                    <option key={h.id} value={h.id}>
-                      {h.name} ({h.province || h.region})
+                  <option value="">-- เลือกโรงพยาบาลคู่ค้า --</option>
+                  {partnerHospitals.map((p) => (
+                    <option key={p.key} value={p.key}>
+                      {p.name} ({p.province || p.region}
+                      {p.totalCases > 0 ? ` · ${p.totalCases} เคส` : ''})
                     </option>
                   ))}
                 </select>
@@ -1379,7 +1921,7 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting || (hospitals.length === 0 && !editingDeal)}
+                  disabled={submitting || (partnerHospitals.length === 0 && !editingDeal)}
                   className="orange-cta px-5 py-2 text-xs font-semibold disabled:opacity-50 rounded-xl cursor-pointer"
                 >
                   {submitting ? 'กำลังบันทึก...' : 'บันทึกรายการขาย'}
@@ -1402,7 +1944,9 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
           >
             <div className="space-y-1">
               <h3 className="text-base font-bold text-white">
-                {pendingDelete.type === 'deal' ? 'ยืนยันการลบรายการขาย' : 'ยืนยันการลบโรงพยาบาล'}
+                {pendingDelete.type === 'deal'
+                  ? 'ยืนยันการลบรายการขาย'
+                  : 'ยืนยันการลบโรงพยาบาลคู่ค้า'}
               </h3>
               <p className="text-xs text-[#e3beb3]/80 leading-relaxed">
                 คุณต้องการลบ{' '}
@@ -1413,7 +1957,7 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
                 </strong>{' '}
                 ออกจากระบบใช่หรือไม่?{' '}
                 {pendingDelete.type === 'deal'
-                  ? 'ยอดเคสและยอดขายของโรงพยาบาลที่เกี่ยวข้องจะถูกปรับลดอัตโนมัติ'
+                  ? 'ยอดเคสและยอดขายของโรงพยาบาลคู่ค้าที่เกี่ยวข้องจะถูกปรับลดอัตโนมัติ'
                   : 'การลบนี้ไม่สามารถย้อนกลับได้'}
               </p>
             </div>

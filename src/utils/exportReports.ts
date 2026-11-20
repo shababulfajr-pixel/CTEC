@@ -57,7 +57,7 @@ export function exportToExcel(
     .sort((a, b) => b.caseCount - a.caseCount)
     .map((h, idx) => ({
       ลำดับ: idx + 1,
-      ชื่อโรงพยาบาล: h.name,
+      โรงพยาบาลคู่ค้า: h.name,
       ประเภท: h.hospitalType,
       จังหวัด: h.province || '-',
       ภูมิภาค: h.region,

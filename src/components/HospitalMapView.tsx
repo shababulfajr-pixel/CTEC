@@ -1,12 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Building2,
+  ClipboardList,
   Compass,
-  Download,
   Flame,
   Layers,
-  Loader2,
-  MapPin,
   Minus,
   Plus,
   RotateCcw,
@@ -17,7 +15,6 @@ import {
   matchCatalogHospitalByName,
   normalizeHospitalNameKey,
   THAILAND_HOSPITALS_CATALOG,
-  type ThailandHospitalEntry,
 } from '../data/thailandHospitalsCatalog';
 import {
   projectThailandLatLng,
@@ -26,55 +23,53 @@ import {
   THAILAND_PROVINCES,
   type ThailandProvinceShape,
 } from '../data/thailandMapData';
-import { getFriendlyFirestoreError } from '../firebase';
-import { createHospital } from '../services/crmService';
 import {
   formatCompactCurrency,
   formatCurrency,
   getDensityLevel,
   getDensityMeta,
-  HOSPITAL_STATUS_LABEL,
   REGIONS,
   type DensityLevel,
   type Hospital,
-  type HospitalStatus,
+  type HospitalCategoryCode,
   type HospitalType,
   type OfficeCase,
   type RegionName,
-  type UserProfile,
 } from '../types';
 
 interface HospitalMapViewProps {
-  hospitals: Hospital[];
+  /** Live updated case database — the sole source of hospitals displayed on the map */
   officeCases: OfficeCase[];
-  currentUser: UserProfile;
+  /** Optional silent ID→name lookup solely for jump-focusing from other tabs (never plotted on the map) */
+  focusLookupHospitals?: Hospital[];
   focusedHospitalId: string | null;
-  onSelectAddDeal: (hospital: Hospital) => void;
-  onSelectAddHospital: () => void;
-  onNotifyToast: (msg: string) => void;
+  onOpenOfficeCases?: () => void;
 }
 
-interface UnifiedMapHospital {
+type LocationPrecision = 'exact' | 'province' | 'fallback';
+
+interface MapDatabaseHospital {
   id: string;
   catalogId?: string;
-  crmHospital?: Hospital;
-  inCrm: boolean;
   name: string;
+  aliasesSeen: string[];
   address: string;
   province: string;
   region: RegionName;
   hospitalType: HospitalType;
-  lat: number;
-  lng: number;
+  lat: number | null;
+  lng: number | null;
   x: number;
   y: number;
-  crmCases: number;
-  officeCasesCount: number;
+  locationPrecision: LocationPrecision;
   totalCases: number;
   totalRevenue: number;
-  status: HospitalStatus;
-  ownerName: string;
-  isCtecReference?: boolean;
+  deliveredCount: number;
+  sterilizingCount: number;
+  inProgressCount: number;
+  latestDoctor: string;
+  latestReceiver: string;
+  latestDate: string;
 }
 
 const HOSPITAL_TYPE_COLORS: Record<HospitalType, string> = {
@@ -84,6 +79,27 @@ const HOSPITAL_TYPE_COLORS: Record<HospitalType, string> = {
   คลินิกเฉพาะทาง: '#34D399',
 };
 
+const PROVINCE_KEYWORD_ALIASES: { keyword: string; provinceTh: string }[] = [
+  { keyword: 'กทม', provinceTh: 'กรุงเทพมหานคร' },
+  { keyword: 'กรุงเทพ', provinceTh: 'กรุงเทพมหานคร' },
+  { keyword: 'bangkok', provinceTh: 'กรุงเทพมหานคร' },
+  { keyword: 'โคราช', provinceTh: 'นครราชสีมา' },
+  { keyword: 'หาดใหญ่', provinceTh: 'สงขลา' },
+  { keyword: 'พัทยา', provinceTh: 'ชลบุรี' },
+  { keyword: 'ศรีราชา', provinceTh: 'ชลบุรี' },
+  { keyword: 'บางแสน', provinceTh: 'ชลบุรี' },
+  { keyword: 'สัตหีบ', provinceTh: 'ชลบุรี' },
+  { keyword: 'หัวหิน', provinceTh: 'ประจวบคีรีขันธ์' },
+  { keyword: 'เบตง', provinceTh: 'ยะลา' },
+  { keyword: 'แม่สอด', provinceTh: 'ตาก' },
+  { keyword: 'ปากเกร็ด', provinceTh: 'นนทบุรี' },
+  { keyword: 'รังสิต', provinceTh: 'ปทุมธานี' },
+  { keyword: 'บางพลี', provinceTh: 'สมุทรปราการ' },
+  { keyword: 'มหาชัย', provinceTh: 'สมุทรสาคร' },
+  { keyword: 'สุไหงโก-ลก', provinceTh: 'นราธิวาส' },
+  { keyword: 'สุไหงโกลก', provinceTh: 'นราธิวาส' },
+];
+
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 8.5;
 
@@ -91,30 +107,70 @@ function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
 }
 
+function inferHospitalType(rawName: string, dominantCategory: HospitalCategoryCode): HospitalType {
+  const lower = rawName.toLowerCase();
+  if (
+    lower.includes('คลินิก') ||
+    lower.includes('clinic') ||
+    lower.includes('ศูนย์ทันตกรรม')
+  ) {
+    return 'คลินิกเฉพาะทาง';
+  }
+  if (
+    lower.includes('คณะแพทยศาสตร์') ||
+    lower.includes('มหาวิทยาลัย') ||
+    lower.includes('ศิริราช') ||
+    lower.includes('จุฬา') ||
+    lower.includes('รามาธิบดี') ||
+    lower.includes('มหาราชนครเชียงใหม่') ||
+    lower.includes('ศรีนครินทร์') ||
+    lower.includes('สงขลานครินทร์')
+  ) {
+    return 'โรงเรียนแพทย์';
+  }
+  if (dominantCategory === 2) return 'โรงพยาบาลเอกชน';
+  if (dominantCategory === 3) return 'คลินิกเฉพาะทาง';
+  return 'โรงพยาบาลรัฐ';
+}
+
+function matchProvinceFromTexts(texts: string[]): ThailandProvinceShape | undefined {
+  const combined = texts.filter(Boolean).join(' ').toLowerCase();
+  if (!combined) return undefined;
+
+  for (const prov of THAILAND_PROVINCES) {
+    if (combined.includes(prov.nameTh.toLowerCase())) {
+      return prov;
+    }
+    if (prov.nameEn && combined.includes(prov.nameEn.toLowerCase())) {
+      return prov;
+    }
+  }
+
+  for (const alias of PROVINCE_KEYWORD_ALIASES) {
+    if (combined.includes(alias.keyword)) {
+      return THAILAND_PROVINCES.find((p) => p.nameTh === alias.provinceTh);
+    }
+  }
+
+  return undefined;
+}
+
 export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
-  hospitals,
   officeCases,
-  currentUser,
+  focusLookupHospitals,
   focusedHospitalId,
-  onSelectAddDeal,
-  onSelectAddHospital,
-  onNotifyToast,
+  onOpenOfficeCases,
 }) => {
   // Visual & filter states
   const [viewMode, setViewMode] = useState<'density' | 'type'>('density');
-  const [scopeMode, setScopeMode] = useState<'nationwide' | 'active_only'>('nationwide');
   const [densityFilter, setDensityFilter] = useState<'all' | DensityLevel>('all');
   const [regionFilter, setRegionFilter] = useState<'all' | RegionName>('all');
   const [selectedProvinceName, setSelectedProvinceName] = useState<string | null>(null);
   const [hoveredProvinceName, setHoveredProvinceName] = useState<string | null>(null);
-  const [selectedHospitalId, setSelectedHospitalId] = useState<string | null>(focusedHospitalId);
+  const [selectedHospitalId, setSelectedHospitalId] = useState<string | null>(null);
   const [hoveredHospitalId, setHoveredHospitalId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sideTab, setSideTab] = useState<'hospitals' | 'provinces'>('hospitals');
-
-  // Import states
-  const [importingRegion, setImportingRegion] = useState(false);
-  const [importingSingleId, setImportingSingleId] = useState<string | null>(null);
 
   // Interactive SVG camera (center cx, cy in viewBox space + zoom factor)
   const [camera, setCamera] = useState<{ cx: number; cy: number; zoom: number }>({
@@ -131,163 +187,239 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
   } | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
-  // Aggregate live Office Cases by normalized hospital name & matched catalog ID
-  const officeCasesByHospital = useMemo(() => {
-    const byCatalogId: Record<string, { count: number; revenue: number }> = {};
-    const byNormName: Record<string, { count: number; revenue: number }> = {};
+  // Build map hospital database EXCLUSIVELY from updated officeCases,
+  // referenced against the offline 77-province Thailand map & hospital catalog
+  const mapHospitals: MapDatabaseHospital[] = useMemo(() => {
+    interface AggBucket {
+      key: string;
+      catalogId?: string;
+      rawNameFreq: Map<string, number>;
+      categoryFreq: Record<HospitalCategoryCode, number>;
+      locationHints: string[];
+      totalCases: number;
+      totalRevenue: number;
+      deliveredCount: number;
+      sterilizingCount: number;
+      inProgressCount: number;
+      latestDoctor: string;
+      latestReceiver: string;
+      latestDate: string;
+    }
+
+    const buckets = new Map<string, AggBucket>();
 
     for (const oc of officeCases) {
       const rawName = (oc.hospitalName || '').trim();
       if (!rawName) continue;
+
+      const catalogMatch = matchCatalogHospitalByName(rawName);
+      const normKey = normalizeHospitalNameKey(rawName) || rawName.toLowerCase();
+      const bucketKey = catalogMatch ? `cat:${catalogMatch.id}` : `db:${normKey}`;
+
+      let bucket = buckets.get(bucketKey);
+      if (!bucket) {
+        bucket = {
+          key: bucketKey,
+          catalogId: catalogMatch?.id,
+          rawNameFreq: new Map(),
+          categoryFreq: { 1: 0, 2: 0, 3: 0 },
+          locationHints: [],
+          totalCases: 0,
+          totalRevenue: 0,
+          deliveredCount: 0,
+          sterilizingCount: 0,
+          inProgressCount: 0,
+          latestDoctor: '',
+          latestReceiver: '',
+          latestDate: '',
+        };
+        buckets.set(bucketKey, bucket);
+      }
+
+      bucket.rawNameFreq.set(rawName, (bucket.rawNameFreq.get(rawName) || 0) + 1);
+      const cat: HospitalCategoryCode =
+        oc.hospitalCategory === 2 ? 2 : oc.hospitalCategory === 3 ? 3 : 1;
+      bucket.categoryFreq[cat] += 1;
+
+      if (!catalogMatch && bucket.locationHints.length < 8) {
+        if (oc.receiptAddress?.trim()) bucket.locationHints.push(oc.receiptAddress.trim());
+        if (oc.shippingInfo?.trim()) bucket.locationHints.push(oc.shippingInfo.trim());
+      }
+
+      bucket.totalCases += 1;
       const rev = Number.isFinite(oc.price) ? Math.max(0, oc.price) : 0;
-      const norm = normalizeHospitalNameKey(rawName);
-      if (norm) {
-        if (!byNormName[norm]) byNormName[norm] = { count: 0, revenue: 0 };
-        byNormName[norm].count += 1;
-        byNormName[norm].revenue += rev;
-      }
-      const matched = matchCatalogHospitalByName(rawName);
-      if (matched) {
-        if (!byCatalogId[matched.id]) byCatalogId[matched.id] = { count: 0, revenue: 0 };
-        byCatalogId[matched.id].count += 1;
-        byCatalogId[matched.id].revenue += rev;
+      bucket.totalRevenue += rev;
+
+      if (oc.workflowStatus === 'delivered') bucket.deliveredCount += 1;
+      else if (oc.workflowStatus === 'sterilizing') bucket.sterilizingCount += 1;
+      else bucket.inProgressCount += 1;
+
+      const dateCandidate = (oc.receivedDate || oc.surgeryDate || '').trim();
+      if (!bucket.latestDate || (dateCandidate && dateCandidate >= bucket.latestDate)) {
+        if (dateCandidate) bucket.latestDate = dateCandidate;
+        if (oc.doctorName?.trim()) bucket.latestDoctor = oc.doctorName.trim();
+        if (oc.caseReceiver?.trim()) bucket.latestReceiver = oc.caseReceiver.trim();
+      } else {
+        if (!bucket.latestDoctor && oc.doctorName?.trim()) bucket.latestDoctor = oc.doctorName.trim();
+        if (!bucket.latestReceiver && oc.caseReceiver?.trim()) {
+          bucket.latestReceiver = oc.caseReceiver.trim();
+        }
       }
     }
-    return { byCatalogId, byNormName };
-  }, [officeCases]);
 
-  // Merge Firestore CRM Hospitals + Live Office Cases + Nationwide 156-Hospital Offline Catalog
-  const unifiedHospitals: UnifiedMapHospital[] = useMemo(() => {
-    const matchedCatalogIds = new Set<string>();
-    const list: UnifiedMapHospital[] = [];
+    const catalogById = new Map(THAILAND_HOSPITALS_CATALOG.map((c) => [c.id, c]));
+    const provinceOffsetCounter = new Map<string, number>();
+    const bangkokProv =
+      THAILAND_PROVINCES.find((p) => p.nameTh === 'กรุงเทพมหานคร') || THAILAND_PROVINCES[0];
 
-    // 1. All Firestore CRM Hospitals first
-    for (const h of hospitals) {
-      const catalogMatch =
-        THAILAND_HOSPITALS_CATALOG.find((c) => c.id === h.placeId) ||
-        matchCatalogHospitalByName(h.name);
+    const list: MapDatabaseHospital[] = [];
 
-      if (catalogMatch) {
-        matchedCatalogIds.add(catalogMatch.id);
+    for (const bucket of buckets.values()) {
+      const sortedNames = Array.from(bucket.rawNameFreq.entries()).sort((a, b) => b[1] - a[1]);
+      const primaryRawName = sortedNames[0]?.[0] || '';
+      const aliasesSeen = sortedNames.map(([n]) => n);
+
+      const dominantCategory: HospitalCategoryCode =
+        bucket.categoryFreq[2] >= bucket.categoryFreq[1] &&
+        bucket.categoryFreq[2] >= bucket.categoryFreq[3]
+          ? 2
+          : bucket.categoryFreq[3] > bucket.categoryFreq[1] &&
+              bucket.categoryFreq[3] > bucket.categoryFreq[2]
+            ? 3
+            : 1;
+
+      const catalogEntry = bucket.catalogId ? catalogById.get(bucket.catalogId) : undefined;
+
+      if (catalogEntry) {
+        const { x, y } = projectThailandLatLng(catalogEntry.lat, catalogEntry.lng);
+        list.push({
+          id: catalogEntry.id,
+          catalogId: catalogEntry.id,
+          name: catalogEntry.name,
+          aliasesSeen,
+          address: catalogEntry.address,
+          province: catalogEntry.province,
+          region: catalogEntry.region,
+          hospitalType: catalogEntry.hospitalType,
+          lat: catalogEntry.lat,
+          lng: catalogEntry.lng,
+          x,
+          y,
+          locationPrecision: 'exact',
+          totalCases: bucket.totalCases,
+          totalRevenue: bucket.totalRevenue,
+          deliveredCount: bucket.deliveredCount,
+          sterilizingCount: bucket.sterilizingCount,
+          inProgressCount: bucket.inProgressCount,
+          latestDoctor: bucket.latestDoctor,
+          latestReceiver: bucket.latestReceiver,
+          latestDate: bucket.latestDate,
+        });
+        continue;
       }
 
-      const validLat =
-        typeof h.lat === 'number' && Number.isFinite(h.lat) && h.lat >= 5 && h.lat <= 21
-          ? h.lat
-          : catalogMatch?.lat ?? 13.7563;
-      const validLng =
-        typeof h.lng === 'number' && Number.isFinite(h.lng) && h.lng >= 97 && h.lng <= 106
-          ? h.lng
-          : catalogMatch?.lng ?? 100.5018;
-      const { x, y } = projectThailandLatLng(validLat, validLng);
+      // Not in static catalog — reference against the 77-province Thailand map
+      const matchedProv = matchProvinceFromTexts([primaryRawName, ...bucket.locationHints]);
+      const anchorProv = matchedProv || bangkokProv;
+      const offsetKey = matchedProv ? matchedProv.id : '__fallback__';
+      const idx = provinceOffsetCounter.get(offsetKey) || 0;
+      provinceOffsetCounter.set(offsetKey, idx + 1);
 
-      const norm = normalizeHospitalNameKey(h.name);
-      const officeStat =
-        (catalogMatch && officeCasesByHospital.byCatalogId[catalogMatch.id]) ||
-        (norm && officeCasesByHospital.byNormName[norm]) ||
-        null;
-
-      const officeCount = officeStat?.count || 0;
-      const officeRev = officeStat?.revenue || 0;
-      const crmCases = h.caseCount || 0;
-      const totalCases = crmCases + officeCount;
+      // Gentle golden-angle spiral offset so multiple hospitals in the same province stay distinct
+      const angle = idx * 2.39996;
+      const radius = idx === 0 ? 0 : Math.min(11, 3.2 + Math.sqrt(idx) * 2.4);
+      const x = clamp(anchorProv.cx + Math.cos(angle) * radius, 25, THAILAND_MAP_VIEWBOX.width - 25);
+      const y = clamp(anchorProv.cy + Math.sin(angle) * radius, 25, THAILAND_MAP_VIEWBOX.height - 25);
 
       list.push({
-        id: h.id,
-        catalogId: catalogMatch?.id,
-        crmHospital: h,
-        inCrm: true,
-        name: h.name,
-        address: h.address || catalogMatch?.address || '',
-        province: h.province || catalogMatch?.province || 'ประเทศไทย',
-        region: h.region || catalogMatch?.region || 'ภาคกลาง',
-        hospitalType: h.hospitalType || catalogMatch?.hospitalType || 'โรงพยาบาลรัฐ',
-        lat: validLat,
-        lng: validLng,
+        id: bucket.key,
+        name: primaryRawName,
+        aliasesSeen,
+        address: matchedProv
+          ? `อ้างอิงพิกัดจังหวัด${matchedProv.nameTh} (${matchedProv.region})`
+          : 'อ้างอิงพิกัดกลางบนแผนที่ (ไม่พบชื่อจังหวัดในข้อมูล)',
+        province: matchedProv ? matchedProv.nameTh : 'ไม่ระบุจังหวัด',
+        region: matchedProv ? matchedProv.region : 'ภาคกลาง',
+        hospitalType: inferHospitalType(primaryRawName, dominantCategory),
+        lat: null,
+        lng: null,
         x,
         y,
-        crmCases,
-        officeCasesCount: officeCount,
-        totalCases,
-        totalRevenue: (h.totalRevenue || 0) + officeRev,
-        status: h.status,
-        ownerName: h.ownerName || 'ทีม CTEC',
-        isCtecReference: catalogMatch?.isCtecReference,
-      });
-    }
-
-    // 2. Remaining Nationwide Offline Catalog Hospitals (all 77 provinces)
-    for (const item of THAILAND_HOSPITALS_CATALOG) {
-      if (matchedCatalogIds.has(item.id)) continue;
-      const { x, y } = projectThailandLatLng(item.lat, item.lng);
-      const officeStat = officeCasesByHospital.byCatalogId[item.id];
-      const officeCount = officeStat?.count || 0;
-      const officeRev = officeStat?.revenue || 0;
-
-      list.push({
-        id: item.id,
-        catalogId: item.id,
-        inCrm: false,
-        name: item.name,
-        address: item.address,
-        province: item.province,
-        region: item.region,
-        hospitalType: item.hospitalType,
-        lat: item.lat,
-        lng: item.lng,
-        x,
-        y,
-        crmCases: 0,
-        officeCasesCount: officeCount,
-        totalCases: officeCount,
-        totalRevenue: officeRev,
-        status: officeCount >= 30 ? 'high_priority' : officeCount > 0 ? 'active' : 'prospect',
-        ownerName: 'ฐานข้อมูล รพ.ทั่วประเทศ',
-        isCtecReference: item.isCtecReference,
+        locationPrecision: matchedProv ? 'province' : 'fallback',
+        totalCases: bucket.totalCases,
+        totalRevenue: bucket.totalRevenue,
+        deliveredCount: bucket.deliveredCount,
+        sterilizingCount: bucket.sterilizingCount,
+        inProgressCount: bucket.inProgressCount,
+        latestDoctor: bucket.latestDoctor,
+        latestReceiver: bucket.latestReceiver,
+        latestDate: bucket.latestDate,
       });
     }
 
     return list.sort((a, b) => {
       if (b.totalCases !== a.totalCases) return b.totalCases - a.totalCases;
-      if (a.inCrm !== b.inCrm) return a.inCrm ? -1 : 1;
+      if (b.totalRevenue !== a.totalRevenue) return b.totalRevenue - a.totalRevenue;
       return a.name.localeCompare(b.name, 'th');
     });
-  }, [hospitals, officeCasesByHospital]);
+  }, [officeCases]);
 
-  // Focus hospital passed from Dashboard / Pipeline view
+  // Focus hospital passed from Dashboard / Partner Hospitals view (matches strictly inside mapHospitals)
   useEffect(() => {
     if (!focusedHospitalId) return;
-    const found = unifiedHospitals.find((h) => h.id === focusedHospitalId);
+
+    // 1. Direct match by catalogId or id
+    let found = mapHospitals.find(
+      (h) => h.id === focusedHospitalId || h.catalogId === focusedHospitalId
+    );
+
+    // 2. If jumped via a CRM hospital ID, resolve its name silently to locate the corresponding updated DB hospital
+    if (!found && focusLookupHospitals?.length) {
+      const ref = focusLookupHospitals.find((h) => h.id === focusedHospitalId);
+      if (ref) {
+        const refNorm = normalizeHospitalNameKey(ref.name);
+        const refCatalog =
+          THAILAND_HOSPITALS_CATALOG.find((c) => c.id === ref.placeId) ||
+          matchCatalogHospitalByName(ref.name);
+        found = mapHospitals.find(
+          (h) =>
+            (refCatalog && h.catalogId === refCatalog.id) ||
+            (refNorm && normalizeHospitalNameKey(h.name) === refNorm)
+        );
+      }
+    }
+
     if (found) {
       setSelectedHospitalId(found.id);
-      setCamera({ cx: found.x, cy: found.y, zoom: 4.2 });
+      setCamera({
+        cx: found.x,
+        cy: found.y,
+        zoom: found.region === 'กรุงเทพและปริมณฑล' ? 5.2 : 3.8,
+      });
     }
-  }, [focusedHospitalId, unifiedHospitals]);
+  }, [focusedHospitalId, focusLookupHospitals, mapHospitals]);
 
-  // Province-level heat aggregation (for 77-province choropleth glow & stats)
+  // Province-level heat aggregation strictly from updated database hospitals
   const provinceStatsMap = useMemo(() => {
-    const map: Record<
-      string,
-      { hospitalCount: number; crmCount: number; totalCases: number; totalRevenue: number }
-    > = {};
+    const map: Record<string, { hospitalCount: number; totalCases: number; totalRevenue: number }> =
+      {};
 
     for (const p of THAILAND_PROVINCES) {
-      map[p.nameTh] = { hospitalCount: 0, crmCount: 0, totalCases: 0, totalRevenue: 0 };
+      map[p.nameTh] = { hospitalCount: 0, totalCases: 0, totalRevenue: 0 };
     }
 
-    for (const h of unifiedHospitals) {
+    for (const h of mapHospitals) {
       const key = h.province;
       if (!map[key]) {
-        map[key] = { hospitalCount: 0, crmCount: 0, totalCases: 0, totalRevenue: 0 };
+        map[key] = { hospitalCount: 0, totalCases: 0, totalRevenue: 0 };
       }
       map[key].hospitalCount += 1;
-      if (h.inCrm) map[key].crmCount += 1;
       map[key].totalCases += h.totalCases;
       map[key].totalRevenue += h.totalRevenue;
     }
 
     return map;
-  }, [unifiedHospitals]);
+  }, [mapHospitals]);
 
   const maxProvinceCases = useMemo(() => {
     let max = 1;
@@ -302,8 +434,7 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
     const q = searchQuery.trim().toLowerCase();
     const normQ = normalizeHospitalNameKey(q);
 
-    return unifiedHospitals.filter((h) => {
-      if (scopeMode === 'active_only' && !h.inCrm && h.totalCases === 0) return false;
+    return mapHospitals.filter((h) => {
       if (regionFilter !== 'all' && h.region !== regionFilter) return false;
       if (selectedProvinceName && h.province !== selectedProvinceName) return false;
       if (densityFilter !== 'all' && getDensityLevel(h.totalCases) !== densityFilter) {
@@ -311,31 +442,32 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
       }
       if (q) {
         const hitName = h.name.toLowerCase().includes(q);
+        const hitAlias = h.aliasesSeen.some((a) => a.toLowerCase().includes(q));
         const hitProv = h.province.toLowerCase().includes(q);
         const hitRegion = h.region.toLowerCase().includes(q);
         const hitType = h.hospitalType.toLowerCase().includes(q);
         const hitNorm = normQ.length >= 2 && normalizeHospitalNameKey(h.name).includes(normQ);
-        if (!hitName && !hitProv && !hitRegion && !hitType && !hitNorm) return false;
+        if (!hitName && !hitAlias && !hitProv && !hitRegion && !hitType && !hitNorm) return false;
       }
       return true;
     });
-  }, [unifiedHospitals, scopeMode, regionFilter, selectedProvinceName, densityFilter, searchQuery]);
+  }, [mapHospitals, regionFilter, selectedProvinceName, densityFilter, searchQuery]);
 
-  // Summary metrics
+  // Summary metrics (100% from updated database)
   const kpiStats = useMemo(() => {
     let totalCases = 0;
-    let activeWithCases = 0;
+    let totalRevenue = 0;
     let highDensity = 0;
     let mediumDensity = 0;
     let lowDensity = 0;
-    let crmTotal = 0;
+    let exactMappedCount = 0;
     const provincesWithCases = new Set<string>();
 
-    for (const h of unifiedHospitals) {
+    for (const h of mapHospitals) {
       totalCases += h.totalCases;
-      if (h.inCrm) crmTotal += 1;
-      if (h.totalCases > 0) {
-        activeWithCases += 1;
+      totalRevenue += h.totalRevenue;
+      if (h.locationPrecision === 'exact') exactMappedCount += 1;
+      if (h.province !== 'ไม่ระบุจังหวัด') {
         provincesWithCases.add(h.province);
       }
       const lvl = getDensityLevel(h.totalCases);
@@ -344,9 +476,10 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
       else if (lvl === 'low') lowDensity += 1;
     }
 
-    let topProvince = 'กรุงเทพมหานคร';
+    let topProvince = '';
     let topProvinceCases = 0;
     for (const [prov, stat] of Object.entries(provinceStatsMap)) {
+      if (prov === 'ไม่ระบุจังหวัด') continue;
       if (stat.totalCases > topProvinceCases) {
         topProvinceCases = stat.totalCases;
         topProvince = prov;
@@ -354,10 +487,10 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
     }
 
     return {
-      totalCatalog: unifiedHospitals.length,
-      crmTotal,
+      totalHospitals: mapHospitals.length,
+      exactMappedCount,
       totalCases,
-      activeWithCases,
+      totalRevenue,
       highDensity,
       mediumDensity,
       lowDensity,
@@ -365,13 +498,12 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
       topProvince,
       topProvinceCases,
     };
-  }, [unifiedHospitals, provinceStatsMap]);
+  }, [mapHospitals, provinceStatsMap]);
 
   const rankedProvinces = useMemo(() => {
     return THAILAND_PROVINCES.map((p) => {
       const stat = provinceStatsMap[p.nameTh] || {
         hospitalCount: 0,
-        crmCount: 0,
         totalCases: 0,
         totalRevenue: 0,
       };
@@ -386,13 +518,13 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
   }, [provinceStatsMap, regionFilter]);
 
   const selectedHospital = useMemo(
-    () => unifiedHospitals.find((h) => h.id === selectedHospitalId) || null,
-    [unifiedHospitals, selectedHospitalId]
+    () => mapHospitals.find((h) => h.id === selectedHospitalId) || null,
+    [mapHospitals, selectedHospitalId]
   );
 
   const hoveredHospital = useMemo(
-    () => unifiedHospitals.find((h) => h.id === hoveredHospitalId) || null,
-    [unifiedHospitals, hoveredHospitalId]
+    () => mapHospitals.find((h) => h.id === hoveredHospitalId) || null,
+    [mapHospitals, hoveredHospitalId]
   );
 
   // Compute SVG viewBox string from camera
@@ -422,7 +554,7 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
     });
   }, []);
 
-  const handleFocusHospital = useCallback((h: UnifiedMapHospital) => {
+  const handleFocusHospital = useCallback((h: MapDatabaseHospital) => {
     setSelectedHospitalId(h.id);
     setCamera((prev) => ({
       cx: h.x,
@@ -499,86 +631,6 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
     dragStartRef.current = null;
   }, []);
 
-  // Offline 1-click import: Single catalog hospital into Firestore CRM (strictly real live counts only)
-  const handleImportSingleHospital = useCallback(
-    async (item: UnifiedMapHospital) => {
-      if (item.inCrm) return;
-      setImportingSingleId(item.id);
-      try {
-        const createdId = await createHospital(
-          {
-            name: item.name,
-            placeId: item.catalogId || item.id,
-            address: item.address || item.province,
-            province: item.province,
-            region: item.region,
-            lat: item.lat,
-            lng: item.lng,
-            hospitalType: item.hospitalType,
-            caseCount: item.officeCasesCount || 0,
-            totalRevenue: item.totalRevenue || 0,
-            activeDealsCount: item.officeCasesCount > 0 ? 1 : 0,
-            status: item.totalCases >= 30 ? 'high_priority' : item.totalCases > 0 ? 'active' : 'prospect',
-            contactName: '',
-            contactRole: 'ฝ่ายจัดซื้อเครื่องมือแพทย์',
-            contactPhone: '',
-            notes: 'นำเข้าจากฐานข้อมูลโรงพยาบาลทั่วประเทศ (แผนที่ออฟไลน์)',
-          },
-          currentUser
-        );
-        setSelectedHospitalId(createdId);
-        onNotifyToast(`นำเข้า "${item.name}" เข้าสู่ระบบ CRM เรียบร้อยแล้ว`);
-      } catch (err) {
-        onNotifyToast(getFriendlyFirestoreError(err, `ไม่สามารถนำเข้า "${item.name}" ได้`));
-      } finally {
-        setImportingSingleId(null);
-      }
-    },
-    [currentUser, onNotifyToast]
-  );
-
-  // Batch import hospitals for the currently selected region (or provincial hubs)
-  const handleBatchImportFilteredToCrm = useCallback(async () => {
-    const candidates = filteredHospitals.filter((h) => !h.inCrm).slice(0, 20);
-    if (candidates.length === 0) {
-      onNotifyToast('โรงพยาบาลในตัวกรองปัจจุบันถูกนำเข้าสู่ระบบ CRM ครบแล้ว');
-      return;
-    }
-    setImportingRegion(true);
-    let imported = 0;
-    try {
-      for (const item of candidates) {
-        await createHospital(
-          {
-            name: item.name,
-            placeId: item.catalogId || item.id,
-            address: item.address || item.province,
-            province: item.province,
-            region: item.region,
-            lat: item.lat,
-            lng: item.lng,
-            hospitalType: item.hospitalType,
-            caseCount: item.officeCasesCount || 0,
-            totalRevenue: item.totalRevenue || 0,
-            activeDealsCount: item.officeCasesCount > 0 ? 1 : 0,
-            status: item.officeCasesCount >= 30 ? 'high_priority' : item.officeCasesCount > 0 ? 'active' : 'prospect',
-            contactName: '',
-            contactRole: 'ฝ่ายจัดซื้อเครื่องมือแพทย์',
-            contactPhone: '',
-            notes: 'นำเข้าแบบกลุ่มจากฐานข้อมูลโรงพยาบาลทั่วประเทศ',
-          },
-          currentUser
-        );
-        imported += 1;
-      }
-      onNotifyToast(`นำเข้าโรงพยาบาลจำนวน ${imported} แห่งเข้าสู่ระบบ CRM เรียบร้อยแล้ว`);
-    } catch (err) {
-      onNotifyToast(getFriendlyFirestoreError(err, `นำเข้าได้ ${imported} แห่ง ก่อนพบข้อผิดพลาด`));
-    } finally {
-      setImportingRegion(false);
-    }
-  }, [filteredHospitals, currentUser, onNotifyToast]);
-
   // Province choropleth fill color based on case volume
   const getProvinceFill = (provName: string, isSelected: boolean, isHovered: boolean): string => {
     const stat = provinceStatsMap[provName];
@@ -619,7 +671,7 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
             แผนที่ความหนาแน่นเคสโรงพยาบาลทั่วประเทศไทย
           </h1>
           <p className="text-sm text-[#B5BDCB] mt-1">
-            แผนที่ออฟไลน์ 77 จังหวัด พร้อมฐานข้อมูลโรงพยาบาลทั่วประเทศ {kpiStats.totalCatalog} แห่ง ผสานยอดเคสจาก CRM และตารางเคสออฟฟิศอัตโนมัติ
+            แสดงเฉพาะโรงพยาบาลที่อัปเดตในฐานข้อมูลเคส ({kpiStats.totalHospitals.toLocaleString('th-TH')} แห่ง) อ้างอิงพิกัดจากแผนที่ออฟไลน์ 77 จังหวัด
           </p>
         </div>
 
@@ -649,14 +701,16 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={onSelectAddHospital}
-            className="btn-luxury-orange min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-xl whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            เพิ่มโรงพยาบาลใหม่
-          </button>
+          {onOpenOfficeCases && (
+            <button
+              type="button"
+              onClick={onOpenOfficeCases}
+              className="btn-luxury-orange min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-xl whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <ClipboardList className="w-4 h-4" />
+              อัปเดตฐานข้อมูลเคส
+            </button>
+          )}
         </div>
       </div>
 
@@ -665,11 +719,11 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
         <div className="glass-panel rounded-2xl p-4">
           <div className="text-xs text-[#B5BDCB]">ฐานข้อมูล รพ. บนแผนที่</div>
           <div className="mt-1.5 text-2xl font-bold font-mono tabular-nums text-[#F4F6FB]">
-            {kpiStats.totalCatalog.toLocaleString('th-TH')}
+            {kpiStats.totalHospitals.toLocaleString('th-TH')}
             <span className="text-xs font-sans font-normal text-[#8E97AB] ml-1.5">แห่ง</span>
           </div>
           <div className="mt-1 text-xs text-[#8E97AB]">
-            ครบ 77 จังหวัด · ใน CRM {kpiStats.crmTotal} แห่ง
+            อ้างอิงพิกัดแผนที่ · ครอบคลุม {kpiStats.provincesWithCases}/77 จังหวัด
           </div>
         </div>
 
@@ -679,8 +733,8 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
             {kpiStats.totalCases.toLocaleString('th-TH')}
             <span className="text-xs font-sans font-normal text-[#8E97AB] ml-1.5">เคส</span>
           </div>
-          <div className="mt-1 text-xs text-[#8E97AB]">
-            ครอบคลุม {kpiStats.activeWithCases} รพ. · {kpiStats.provincesWithCases} จังหวัด
+          <div className="mt-1 text-xs font-mono tabular-nums text-[#8E97AB]">
+            มูลค่ารวม {kpiStats.totalRevenue > 0 ? formatCompactCurrency(kpiStats.totalRevenue) : '฿0'}
           </div>
         </div>
 
@@ -698,26 +752,26 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
         <div className="glass-panel rounded-2xl p-4">
           <div className="text-xs text-[#B5BDCB]">จังหวัดที่เคสหนาแน่นสูงสุด</div>
           <div className="mt-1.5 text-lg font-bold text-[#F4F6FB] truncate">
-            {kpiStats.topProvinceCases > 0 ? kpiStats.topProvince : 'พร้อมบันทึกเคส'}
+            {kpiStats.topProvinceCases > 0 ? kpiStats.topProvince : 'ยังไม่มีข้อมูลเคส'}
           </div>
           <div className="mt-1 text-xs font-mono tabular-nums text-[#FFCF90]">
             {kpiStats.topProvinceCases > 0
               ? `${kpiStats.topProvinceCases.toLocaleString('th-TH')} เคสสะสม`
-              : 'บันทึกเคสเพื่อแสดงความหนาแน่นบนแผนที่'}
+              : 'นำเข้า Excel หรือบันทึกเคสเพื่อแสดงผล'}
           </div>
         </div>
       </div>
 
       {/* Instant Offline Search & Regional Quick-Focus Toolbar */}
       <div className="glass-panel rounded-2xl p-4 space-y-3">
-        <div className="flex flex-col md:flex-row gap-2.5">
+        <div className="flex flex-col md:flex-row md:items-center gap-2.5">
           <div className="relative flex-1">
             <Search className="w-4 h-4 text-[#8E97AB] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="ค้นหาชื่อโรงพยาบาล, จังหวัด, หรือประเภท เช่น ศิริราช, เชียงใหม่, ขอนแก่น, โรงเรียนแพทย์..."
+              placeholder="ค้นหาชื่อโรงพยาบาลในฐานข้อมูล, จังหวัด, หรือประเภท เช่น ศิริราช, เชียงใหม่, ขอนแก่น..."
               className="glass-input w-full h-10 pl-10 pr-9 text-sm rounded-xl placeholder:text-[#8E97AB]"
             />
             {searchQuery && (
@@ -732,29 +786,9 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
             )}
           </div>
 
-          <div className="inline-flex items-center p-1 rounded-xl bg-[#0A0E17]/80 border border-white/[0.08] shrink-0">
-            <button
-              type="button"
-              onClick={() => setScopeMode('nationwide')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-                scopeMode === 'nationwide'
-                  ? 'bg-[#262B38] text-[#FFB59D]'
-                  : 'text-[#8E97AB] hover:text-white'
-              }`}
-            >
-              ทั้งประเทศ ({unifiedHospitals.length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setScopeMode('active_only')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-                scopeMode === 'active_only'
-                  ? 'bg-[#262B38] text-[#FFB59D]'
-                  : 'text-[#8E97AB] hover:text-white'
-              }`}
-            >
-              เฉพาะที่มีเคส / CRM ({kpiStats.crmTotal + unifiedHospitals.filter((h) => !h.inCrm && h.totalCases > 0).length})
-            </button>
+          <div className="text-xs text-[#B5BDCB] font-mono tabular-nums px-3 py-2 rounded-xl bg-[#0A0E17]/70 border border-white/[0.08] whitespace-nowrap shrink-0">
+            พิกัดตรงจากฐานข้อมูลแผนที่ {kpiStats.exactMappedCount.toLocaleString('th-TH')}/
+            {kpiStats.totalHospitals.toLocaleString('th-TH')} แห่ง
           </div>
         </div>
 
@@ -842,10 +876,6 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                   <span className="w-2.5 h-2.5 rounded-full bg-[#34D399] inline-block" />
                   1–10 เคส
                 </span>
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-[#64748B] inline-block" />
-                  รพ.เครือข่าย
-                </span>
               </div>
             ) : (
               <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#B5BDCB]">
@@ -860,6 +890,10 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                 <span className="inline-flex items-center gap-1.5">
                   <span className="w-2.5 h-2.5 rounded-full bg-[#FFAA00] inline-block" />
                   โรงพยาบาลเอกชน
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#34D399] inline-block" />
+                  คลินิกเฉพาะทาง
                 </span>
               </div>
             )}
@@ -889,7 +923,7 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                 isDragging ? 'cursor-grabbing' : 'cursor-grab'
               }`}
               role="img"
-              aria-label="แผนที่ประเทศไทย 77 จังหวัดแสดงความหนาแน่นเคสโรงพยาบาล"
+              aria-label="แผนที่ประเทศไทย 77 จังหวัดแสดงความหนาแน่นเคสโรงพยาบาลจากฐานข้อมูลเคส"
             >
               <defs>
                 <radialGradient id="halo-critical">
@@ -971,7 +1005,7 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                 })}
               </g>
 
-              {/* Province Name Labels (appear smoothly at zoomed levels or for major regional hubs) */}
+              {/* Province Name Labels */}
               <g pointerEvents="none">
                 {THAILAND_PROVINCES.map((prov) => {
                   const stat = provinceStatsMap[prov.nameTh];
@@ -988,7 +1022,7 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                     camera.zoom >= 2.2 ||
                     selectedProvinceName === prov.nameTh ||
                     (isMajor && camera.zoom >= 1.0) ||
-                    (stat?.totalCases || 0) >= 30;
+                    (stat?.totalCases || 0) >= 20;
                   if (!showLabel) return null;
 
                   return (
@@ -1001,8 +1035,8 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                         selectedProvinceName === prov.nameTh
                           ? '#FFCF90'
                           : (stat?.totalCases || 0) > 0
-                            ? 'rgba(255,226,195,0.85)'
-                            : 'rgba(181,189,203,0.52)'
+                            ? 'rgba(255,226,195,0.88)'
+                            : 'rgba(181,189,203,0.5)'
                       }
                       fontSize={(camera.zoom >= 3.5 ? 9.5 : 8.5) * invZoom}
                       fontWeight={isMajor || (stat?.totalCases || 0) > 0 ? 600 : 400}
@@ -1014,23 +1048,17 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                 })}
               </g>
 
-              {/* Hospital Case-Density Halo & Pin Layer */}
+              {/* Updated-Database Hospital Case-Density Halo & Pin Layer */}
               <g>
                 {renderOrderedHospitals.map((h) => {
                   const density = getDensityMeta(h.totalCases);
                   const isSel = selectedHospitalId === h.id;
                   const isHov = hoveredHospitalId === h.id;
                   const pinColor =
-                    viewMode === 'density'
-                      ? h.totalCases > 0
-                        ? density.color
-                        : h.inCrm
-                          ? '#94A3B8'
-                          : '#475569'
-                      : HOSPITAL_TYPE_COLORS[h.hospitalType];
+                    viewMode === 'density' ? density.color : HOSPITAL_TYPE_COLORS[h.hospitalType];
 
                   const haloRadius =
-                    viewMode === 'density' && h.totalCases > 0
+                    viewMode === 'density'
                       ? (h.totalCases >= 120
                           ? 46
                           : h.totalCases >= 30
@@ -1056,11 +1084,7 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                         ? 10
                         : h.totalCases >= 11
                           ? 8.5
-                          : h.totalCases >= 1
-                            ? 7
-                            : h.inCrm
-                              ? 5.2
-                              : 3.8) *
+                          : 7) *
                     (isSel ? 1.28 : isHov ? 1.18 : 1) *
                     invZoom;
 
@@ -1099,31 +1123,51 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                       <circle
                         r={coreRadius}
                         fill={pinColor}
-                        fillOpacity={h.totalCases > 0 || h.inCrm || isSel || isHov ? 0.96 : 0.72}
-                        stroke={isSel ? '#080C15' : h.totalCases > 0 ? '#FFFFFF' : 'rgba(255,255,255,0.45)'}
-                        strokeWidth={(isSel ? 2.2 : h.totalCases > 0 ? 1.4 : 0.7) * invZoom}
+                        fillOpacity={0.96}
+                        stroke={isSel ? '#080C15' : '#FFFFFF'}
+                        strokeWidth={(isSel ? 2.2 : 1.4) * invZoom}
                         filter={h.totalCases >= 30 ? 'url(#soft-glow)' : undefined}
                       />
 
-                      {/* Case count number inside pin for active hospitals */}
-                      {h.totalCases > 0 && (
-                        <text
-                          textAnchor="middle"
-                          dominantBaseline="central"
-                          fill="#FFFFFF"
-                          fontSize={(h.totalCases >= 100 ? 7.5 : 8.5) * invZoom}
-                          fontWeight={700}
-                          fontFamily="'IBM Plex Mono', monospace"
-                          pointerEvents="none"
-                        >
-                          {h.totalCases}
-                        </text>
-                      )}
+                      {/* Case count inside pin */}
+                      <text
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fill="#FFFFFF"
+                        fontSize={(h.totalCases >= 100 ? 7.5 : 8.5) * invZoom}
+                        fontWeight={700}
+                        fontFamily="'IBM Plex Mono', monospace"
+                        pointerEvents="none"
+                      >
+                        {h.totalCases}
+                      </text>
                     </g>
                   );
                 })}
               </g>
             </svg>
+
+            {/* Empty Database Overlay Hint (keeps 77-province Thailand map clearly visible behind) */}
+            {mapHospitals.length === 0 && (
+              <div className="absolute inset-x-4 bottom-12 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 z-20 max-w-md bg-[#101522]/92 backdrop-blur-xl border border-white/[0.12] rounded-2xl p-4 text-center shadow-2xl space-y-2.5">
+                <div className="text-sm font-semibold text-[#F4F6FB]">
+                  ยังไม่มีข้อมูลโรงพยาบาลในฐานข้อมูลเคส
+                </div>
+                <p className="text-xs text-[#B5BDCB] leading-relaxed">
+                  แผนที่จะแสดงเฉพาะโรงพยาบาลที่มีการอัปเดตในฐานข้อมูลเคสโดยอ้างอิงพิกัดจากแผนที่ 77 จังหวัด
+                </p>
+                {onOpenOfficeCases && (
+                  <button
+                    type="button"
+                    onClick={onOpenOfficeCases}
+                    className="btn-luxury-orange min-h-[38px] px-4 py-2 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <ClipboardList className="w-3.5 h-3.5" />
+                    ไปที่เมนูกรอกข้อมูลเคส / นำเข้า Excel
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* Top-Left Compact Map Zoom Controls */}
             <div className="absolute top-3.5 left-3.5 z-20 flex flex-col gap-1.5">
@@ -1170,7 +1214,9 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                         {hoveredHospital.totalCases.toLocaleString('th-TH')} เคส
                       </span>
                       <span className="text-[#8E97AB]">
-                        {hoveredHospital.inCrm ? 'อยู่ใน CRM' : 'คลิกเพื่อดู / นำเข้า CRM'}
+                        {hoveredHospital.totalRevenue > 0
+                          ? formatCompactCurrency(hoveredHospital.totalRevenue)
+                          : 'คลิกเพื่อดูรายละเอียด'}
                       </span>
                     </div>
                   </>
@@ -1180,7 +1226,8 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                       จังหวัด{hoveredProvObj.nameTh}
                     </div>
                     <div className="text-[11px] text-[#B5BDCB] mt-0.5">
-                      {hoveredProvObj.region} · รพ. {hoveredProvStat?.hospitalCount || 0} แห่ง ·{' '}
+                      {hoveredProvObj.region} · รพ.ในฐานข้อมูล {hoveredProvStat?.hospitalCount || 0}{' '}
+                      แห่ง ·{' '}
                       <span className="font-mono tabular-nums text-[#FFCF90] font-semibold">
                         {(hoveredProvStat?.totalCases || 0).toLocaleString('th-TH')} เคส
                       </span>
@@ -1192,7 +1239,7 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
 
             {/* Floating Apple Frosted Glass Hospital Inspector Card (when a pin is selected) */}
             {selectedHospital && (
-              <div className="absolute bottom-3.5 left-3.5 right-3.5 sm:left-auto sm:right-3.5 sm:w-[330px] z-30 bg-[#121724]/95 backdrop-blur-2xl border border-white/[0.14] rounded-2xl p-4 shadow-2xl space-y-3">
+              <div className="absolute bottom-3.5 left-3.5 right-3.5 sm:left-auto sm:right-3.5 sm:w-[340px] z-30 bg-[#121724]/95 backdrop-blur-2xl border border-white/[0.14] rounded-2xl p-4 shadow-2xl space-y-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="text-[11px] text-[#FFCF90] font-medium">
@@ -1217,18 +1264,17 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
 
                 <div className="grid grid-cols-2 gap-2.5 py-2.5 border-y border-white/[0.08]">
                   <div>
-                    <div className="text-[11px] text-[#8E97AB]">เคสสะสมรวม</div>
+                    <div className="text-[11px] text-[#8E97AB]">เคสสะสมในฐานข้อมูล</div>
                     <div
                       className="text-lg font-bold font-mono tabular-nums"
                       style={{ color: getDensityMeta(selectedHospital.totalCases).color }}
                     >
                       {selectedHospital.totalCases.toLocaleString('th-TH')} เคส
                     </div>
-                    {selectedHospital.officeCasesCount > 0 && (
-                      <div className="text-[10px] text-[#B5BDCB] mt-0.5">
-                        CRM {selectedHospital.crmCases} · ออฟฟิศ {selectedHospital.officeCasesCount}
-                      </div>
-                    )}
+                    <div className="text-[10px] text-[#B5BDCB] mt-0.5 font-mono tabular-nums">
+                      ส่งแล้ว {selectedHospital.deliveredCount} · ฆ่าเชื้อ{' '}
+                      {selectedHospital.sterilizingCount} · ทำอยู่ {selectedHospital.inProgressCount}
+                    </div>
                   </div>
                   <div>
                     <div className="text-[11px] text-[#8E97AB]">มูลค่ายอดขายสะสม</div>
@@ -1241,46 +1287,34 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between text-xs text-[#B5BDCB]">
-                  <span>
-                    สถานะ:{' '}
-                    <span className="text-white font-medium">
-                      {selectedHospital.inCrm
-                        ? HOSPITAL_STATUS_LABEL[selectedHospital.status]
-                        : 'รพ.เครือข่ายทั่วประเทศ'}
+                <div className="space-y-1 text-xs text-[#B5BDCB]">
+                  {selectedHospital.latestDoctor && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[#8E97AB]">แพทย์ล่าสุด</span>
+                      <span className="text-white font-medium truncate">
+                        {selectedHospital.latestDoctor}
+                      </span>
+                    </div>
+                  )}
+                  {selectedHospital.latestReceiver && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[#8E97AB]">ผู้รับเคสล่าสุด</span>
+                      <span className="text-white font-medium truncate">
+                        {selectedHospital.latestReceiver}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-2 pt-0.5">
+                    <span className="text-[#8E97AB]">แหล่งพิกัด</span>
+                    <span className="font-mono text-[10px] text-[#B5BDCB]">
+                      {selectedHospital.lat !== null && selectedHospital.lng !== null
+                        ? `${selectedHospital.lat.toFixed(3)}, ${selectedHospital.lng.toFixed(3)}`
+                        : selectedHospital.locationPrecision === 'province'
+                          ? `อ้างอิงจังหวัด${selectedHospital.province}`
+                          : 'อ้างอิงพิกัดกลาง'}
                     </span>
-                  </span>
-                  <span className="font-mono text-[10px] text-[#8E97AB]">
-                    {selectedHospital.lat.toFixed(3)}, {selectedHospital.lng.toFixed(3)}
-                  </span>
+                  </div>
                 </div>
-
-                {selectedHospital.crmHospital ? (
-                  <button
-                    type="button"
-                    onClick={() => onSelectAddDeal(selectedHospital.crmHospital!)}
-                    className="btn-luxury-orange w-full min-h-[40px] py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    เพิ่มเคส / สร้างดีลใหม่
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={importingSingleId === selectedHospital.id}
-                    onClick={() => void handleImportSingleHospital(selectedHospital)}
-                    className="btn-luxury-orange w-full min-h-[40px] py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
-                  >
-                    {importingSingleId === selectedHospital.id ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Download className="w-3.5 h-3.5" />
-                    )}
-                    {importingSingleId === selectedHospital.id
-                      ? 'กำลังนำเข้า CRM...'
-                      : 'นำเข้าโรงพยาบาลนี้เข้าสู่ CRM'}
-                  </button>
-                )}
               </div>
             )}
 
@@ -1293,56 +1327,36 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
           </div>
         </div>
 
-        {/* Right 4 Cols: Nationwide Hospital & Province Ranking Panel */}
+        {/* Right 4 Cols: Updated Database Hospital & 77-Province Ranking Panel */}
         <div className="lg:col-span-4 glass-panel rounded-2xl flex flex-col overflow-hidden max-h-[700px]">
           {/* Panel Tab Header */}
-          <div className="px-4 py-3 border-b border-white/[0.08] space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <div className="inline-flex items-center p-1 rounded-xl bg-[#0A0E17]/80 border border-white/[0.08]">
-                <button
-                  type="button"
-                  onClick={() => setSideTab('hospitals')}
-                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer inline-flex items-center gap-1.5 ${
-                    sideTab === 'hospitals'
-                      ? 'bg-[#FF5E1E] text-white'
-                      : 'text-[#B5BDCB] hover:text-white'
-                  }`}
-                >
-                  <Flame className="w-3.5 h-3.5" />
-                  รายชื่อ รพ. ({filteredHospitals.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSideTab('provinces')}
-                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer inline-flex items-center gap-1.5 ${
-                    sideTab === 'provinces'
-                      ? 'bg-[#FF5E1E] text-white'
-                      : 'text-[#B5BDCB] hover:text-white'
-                  }`}
-                >
-                  <Layers className="w-3.5 h-3.5" />
-                  77 จังหวัด ({rankedProvinces.length})
-                </button>
-              </div>
-            </div>
-
-            {sideTab === 'hospitals' && filteredHospitals.some((h) => !h.inCrm) && (
+          <div className="px-4 py-3 border-b border-white/[0.08] flex items-center justify-between gap-2">
+            <div className="inline-flex items-center p-1 rounded-xl bg-[#0A0E17]/80 border border-white/[0.08]">
               <button
                 type="button"
-                disabled={importingRegion}
-                onClick={() => void handleBatchImportFilteredToCrm()}
-                className="w-full py-2 px-3 rounded-xl bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.08] text-xs font-medium text-[#FFCF90] flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                onClick={() => setSideTab('hospitals')}
+                className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer inline-flex items-center gap-1.5 ${
+                  sideTab === 'hospitals'
+                    ? 'bg-[#FF5E1E] text-white'
+                    : 'text-[#B5BDCB] hover:text-white'
+                }`}
               >
-                {importingRegion ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Download className="w-3.5 h-3.5" />
-                )}
-                {importingRegion
-                  ? 'กำลังนำเข้าข้อมูล รพ. เข้าสู่ CRM...'
-                  : `นำเข้า รพ. ในมุมมองนี้เข้าสู่ CRM (สูงสุด 20 แห่ง/ครั้ง)`}
+                <Flame className="w-3.5 h-3.5" />
+                รายชื่อ รพ. ({filteredHospitals.length})
               </button>
-            )}
+              <button
+                type="button"
+                onClick={() => setSideTab('provinces')}
+                className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer inline-flex items-center gap-1.5 ${
+                  sideTab === 'provinces'
+                    ? 'bg-[#FF5E1E] text-white'
+                    : 'text-[#B5BDCB] hover:text-white'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                77 จังหวัด ({rankedProvinces.length})
+              </button>
+            </div>
           </div>
 
           {/* Scrollable List */}
@@ -1352,30 +1366,48 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                 <div className="p-8 text-center space-y-2.5">
                   <Building2 className="w-8 h-8 text-[#8E97AB] mx-auto" />
                   <div className="text-sm font-semibold text-[#F4F6FB]">
-                    ไม่พบโรงพยาบาลตามตัวกรอง
+                    {mapHospitals.length === 0
+                      ? 'ยังไม่มีข้อมูลโรงพยาบาลในฐานข้อมูล'
+                      : 'ไม่พบโรงพยาบาลตามตัวกรอง'}
                   </div>
                   <p className="text-xs text-[#B5BDCB]">
-                    ลองล้างคำค้นหาหรือเปลี่ยนกลับเป็นมุมมองทั้งประเทศ
+                    {mapHospitals.length === 0
+                      ? 'นำเข้าไฟล์ Excel หรือบันทึกข้อมูลเคสในเมนูกรอกข้อมูลเคส เพื่อปักหมุดโรงพยาบาลบนแผนที่โดยอัตโนมัติ'
+                      : 'ลองล้างคำค้นหาหรือเปลี่ยนกลับเป็นมุมมองทั้งประเทศ'}
                   </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSearchQuery('');
-                      setDensityFilter('all');
-                      setScopeMode('nationwide');
-                      handleResetCamera();
-                    }}
-                    className="btn-glass px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer"
-                  >
-                    แสดงโรงพยาบาลทั้งหมด
-                  </button>
+                  {mapHospitals.length === 0 ? (
+                    onOpenOfficeCases && (
+                      <button
+                        type="button"
+                        onClick={onOpenOfficeCases}
+                        className="btn-luxury-orange px-3.5 py-2 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <ClipboardList className="w-3.5 h-3.5" />
+                        ไปที่เมนูกรอกข้อมูลเคส
+                      </button>
+                    )
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery('');
+                        setDensityFilter('all');
+                        handleResetCamera();
+                      }}
+                      className="btn-glass px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer"
+                    >
+                      แสดงโรงพยาบาลทั้งหมดในฐานข้อมูล
+                    </button>
+                  )}
                 </div>
               ) : (
                 filteredHospitals.map((h) => {
                   const density = getDensityMeta(h.totalCases);
                   const selected = selectedHospitalId === h.id;
-                  const progressPct =
-                    h.totalCases > 0 ? Math.min(100, Math.max(8, Math.round((h.totalCases / 150) * 100))) : 0;
+                  const progressPct = Math.min(
+                    100,
+                    Math.max(8, Math.round((h.totalCases / Math.max(kpiStats.topProvinceCases, 50)) * 100))
+                  );
 
                   return (
                     <div
@@ -1400,13 +1432,12 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                           </div>
                           <div className="text-xs text-[#B5BDCB] mt-0.5 truncate">
                             {h.province} · {h.hospitalType}
-                            {h.inCrm ? ' · CRM' : ''}
                           </div>
                         </div>
                         <div className="text-right shrink-0">
                           <div
                             className="text-sm font-bold font-mono tabular-nums"
-                            style={{ color: h.totalCases > 0 ? density.color : '#8E97AB' }}
+                            style={{ color: density.color }}
                           >
                             {h.totalCases.toLocaleString('th-TH')} เคส
                           </div>
@@ -1416,25 +1447,23 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                         </div>
                       </div>
 
-                      {h.totalCases > 0 && (
-                        <div className="mt-2 flex items-center gap-2">
-                          <div className="flex-1 h-1.5 bg-white/[0.08] rounded-full overflow-hidden">
-                            <div
-                              className="h-full rounded-full transition-all"
-                              style={{
-                                width: `${progressPct}%`,
-                                backgroundColor: density.color,
-                              }}
-                            />
-                          </div>
-                          <span
-                            className="text-[10px] font-mono font-bold whitespace-nowrap"
-                            style={{ color: density.color }}
-                          >
-                            {density.tierCode}
-                          </span>
+                      <div className="mt-2 flex items-center gap-2">
+                        <div className="flex-1 h-1.5 bg-white/[0.08] rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all"
+                            style={{
+                              width: `${progressPct}%`,
+                              backgroundColor: density.color,
+                            }}
+                          />
                         </div>
-                      )}
+                        <span
+                          className="text-[10px] font-mono font-bold whitespace-nowrap"
+                          style={{ color: density.color }}
+                        >
+                          {density.tierCode}
+                        </span>
+                      </div>
                     </div>
                   );
                 })
@@ -1457,7 +1486,7 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
                         {prov.nameTh}
                       </div>
                       <div className="text-xs text-[#8E97AB] mt-0.5">
-                        {prov.region} · รพ. {prov.hospitalCount} แห่ง
+                        {prov.region} · รพ.ในฐานข้อมูล {prov.hospitalCount} แห่ง
                       </div>
                     </div>
                     <div className="text-right shrink-0">

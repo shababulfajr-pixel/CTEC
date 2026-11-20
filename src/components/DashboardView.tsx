@@ -161,7 +161,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const liveOfficeRevenue = scopedOfficeCases.reduce((acc, c) => acc + (c.price || 0), 0);
     const totalRevenue = liveWonRevenue + liveOfficeRevenue;
 
-    const hospitalsWithCases = scopedHospitals.filter((h) => h.caseCount > 0).length;
+    const partnerAllKeys = new Set<string>();
+    const partnerWithCasesKeys = new Set<string>();
+
+    scopedHospitals.forEach((h) => {
+      const cat =
+        THAILAND_HOSPITALS_CATALOG.find((c) => c.id === h.placeId) ||
+        matchCatalogHospitalByName(h.name);
+      const key = cat ? `cat:${cat.id}` : `norm:${normalizeHospitalNameKey(h.name) || h.id}`;
+      partnerAllKeys.add(key);
+      if (h.caseCount > 0) partnerWithCasesKeys.add(key);
+    });
+
+    scopedOfficeCases.forEach((oc) => {
+      const rawName = (oc.hospitalName || '').trim();
+      if (!rawName || rawName === '-' || rawName.length < 2) return;
+      const cat = matchCatalogHospitalByName(rawName);
+      const key = cat
+        ? `cat:${cat.id}`
+        : `norm:${normalizeHospitalNameKey(rawName) || rawName.toLowerCase()}`;
+      partnerAllKeys.add(key);
+      partnerWithCasesKeys.add(key);
+    });
+
+    const activeHospitalsCount = partnerAllKeys.size;
+    const hospitalsWithCases = partnerWithCasesKeys.size;
 
     // Determine top region strictly from live hospitals + live officeCases
     const regionCounts: Record<string, number> = {};
@@ -200,7 +224,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       totalRevenue,
       liveWonRevenue,
       liveOfficeRevenue,
-      activeHospitalsCount: scopedHospitals.length,
+      activeHospitalsCount,
       hospitalsWithCases,
       topRegionName,
       topRegionCases,
@@ -503,10 +527,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
 
-        {/* KPI 3: Active Hospitals in CRM */}
+        {/* KPI 3: Partner Hospitals (Linked CRM + Office Cases) */}
         <div className="glass-panel relative overflow-hidden rounded-2xl p-4 flex flex-col justify-between transition-transform duration-200 hover:-translate-y-0.5">
           <div className="flex items-center justify-between gap-2 text-xs">
-            <span className="text-[#C8B6AE] font-medium">โรงพยาบาลใน CRM</span>
+            <span className="text-[#C8B6AE] font-medium">โรงพยาบาลคู่ค้า</span>
             <Building2 className="w-4 h-4 text-[#FFB59D]" />
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
@@ -518,7 +542,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </span>
           </div>
           <div className="mt-3 pt-2 border-t border-white/[0.06] text-[11px] text-[#B5BDCB]">
-            มีเคสแล้ว {displayKpis.hospitalsWithCases} แห่ง · แผนที่ครบ 77 จว.
+            มีเคสเชื่อมแล้ว {displayKpis.hospitalsWithCases.toLocaleString('th-TH')} แห่ง · แผนที่ครบ 77 จว.
           </div>
         </div>
 
