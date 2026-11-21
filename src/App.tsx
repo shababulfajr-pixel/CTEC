@@ -1,10 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, signOut, type User } from 'firebase/auth';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
 import {
   BarChart3,
   Bell,
-  Briefcase,
   ClipboardList,
   LayoutDashboard,
   Loader2,
@@ -16,16 +15,16 @@ import {
   X,
 } from 'lucide-react';
 import { AdminPanelView } from './components/AdminPanelView';
-import { CustomersDealsView } from './components/CustomersDealsView';
 import { DashboardView } from './components/DashboardView';
 import { HospitalMapView } from './components/HospitalMapView';
 import { LoginView } from './components/LoginView';
 import { NotificationsPanel } from './components/NotificationsPanel';
 import { OfficeAdminCasesView } from './components/OfficeAdminCasesView';
 import { PdfReportTemplate } from './components/PdfReportTemplate';
+import { RegistrationGateView } from './components/RegistrationGateView';
 import { auth, db, getFriendlyFirestoreError, OperationType } from './firebase';
 import {
-  ensureUserProfile,
+  fetchExistingUserProfile,
   logAuditEvent,
   publishNotification,
 } from './services/crmService';
@@ -59,10 +58,6 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [globalSearch, setGlobalSearch] = useState('');
   const [focusedHospitalId, setFocusedHospitalId] = useState<string | null>(null);
-  const [preselectedHospitalForDeal, setPreselectedHospitalForDeal] =
-    useState<Hospital | null>(null);
-  const [openAddHospitalSignal, setOpenAddHospitalSignal] = useState(0);
-  const [openAddDealSignal, setOpenAddDealSignal] = useState(0);
   const [openAddOfficeCaseSignal, setOpenAddOfficeCaseSignal] = useState(0);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -91,6 +86,12 @@ export default function App() {
     }, 4500);
   }, []);
 
+  const isApprovedAndActive = Boolean(
+    currentUser &&
+      currentUser.active &&
+      (!currentUser.approvalStatus || currentUser.approvalStatus === 'approved')
+  );
+
   // Firebase Auth listener
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -98,7 +99,7 @@ export default function App() {
       if (user) {
         setProfileLoading(true);
         try {
-          const profile = await ensureUserProfile(user);
+          const profile = await fetchExistingUserProfile(user);
           setCurrentUser(profile);
         } catch (err) {
           console.error('Failed to load profile:', err);
@@ -121,25 +122,48 @@ export default function App() {
     return () => unsub();
   }, []);
 
+  // Real-time self-profile listener while awaiting admin approval (auto-unlocks the moment Admin approves)
+  useEffect(() => {
+    if (!authReady || !firebaseUser || !currentUser || isApprovedAndActive) return;
+
+    const unsubSelf = onSnapshot(
+      doc(db, 'users', firebaseUser.uid),
+      (snap) => {
+        if (snap.exists()) {
+          setCurrentUser({ id: snap.id, ...(snap.data() as Omit<UserProfile, 'id'>) });
+        }
+      },
+      (err) => {
+        console.warn('Pending status listener warning:', err);
+      }
+    );
+
+    return () => unsubSelf();
+  }, [authReady, firebaseUser, currentUser?.uid, isApprovedAndActive]);
+
   // Auto-redirect away from restricted tabs if user's role changes in real time
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || !isApprovedAndActive) return;
     const isAdminOrMgr =
       currentUser.role === 'admin' ||
       currentUser.role === 'executive' ||
       currentUser.role === 'manager';
-    const canOffice = isAdminOrMgr || currentUser.role === 'office_admin';
+    const canOffice =
+      isAdminOrMgr ||
+      currentUser.role === 'office_admin' ||
+      currentUser.role === 'sales' ||
+      currentUser.role === 'accounting';
 
     if (activeTab === 'admin' && !isAdminOrMgr) {
       setActiveTab('dashboard');
     } else if (activeTab === 'office_cases' && !canOffice) {
       setActiveTab('dashboard');
     }
-  }, [activeTab, currentUser]);
+  }, [activeTab, currentUser, isApprovedAndActive]);
 
-  // Real-time Firestore listeners (strictly gated by authenticated, active user + profile)
+  // Real-time Firestore listeners (STRICTLY gated by authenticated, approved, and active user)
   useEffect(() => {
-    if (!authReady || !firebaseUser || !currentUser || !currentUser.active) return;
+    if (!authReady || !firebaseUser || !currentUser || !isApprovedAndActive) return;
 
     const handleListenerError = (err: unknown, path: string) => {
       console.error(`Firestore listener error (${OperationType.LIST} ${path}):`, err);
@@ -151,7 +175,9 @@ export default function App() {
       currentUser.role === 'executive' ||
       currentUser.role === 'manager';
 
-    // 1. Users list & live current user role sync
+    const canReadAllOrgDeals = isManagerOrAbove || currentUser.role === 'accounting';
+
+    // 1. Users list & live current user role/approval sync
     const unsubUsers = onSnapshot(
       query(collection(db, 'users'), where('orgId', '==', ORG_ID)),
       (snap) => {
@@ -177,8 +203,8 @@ export default function App() {
       (err) => handleListenerError(err, 'hospitals')
     );
 
-    // 3. Deals list (strict RBAC: managers/executives/admins see all org deals, sales reps see own deals)
-    const dealsQuery = isManagerOrAbove
+    // 3. Deals list (strict RBAC: managers/executives/admins/accounting see all org deals, others see own deals)
+    const dealsQuery = canReadAllOrgDeals
       ? query(collection(db, 'deals'), where('orgId', '==', ORG_ID))
       : query(collection(db, 'deals'), where('ownerId', '==', firebaseUser.uid));
 
@@ -223,7 +249,10 @@ export default function App() {
     );
 
     const canAccessOfficeCases =
-      isManagerOrAbove || currentUser.role === 'office_admin';
+      isManagerOrAbove ||
+      currentUser.role === 'office_admin' ||
+      currentUser.role === 'sales' ||
+      currentUser.role === 'accounting';
 
     // 5. Audit Logs (Managers/Executives/Admins only)
     let unsubAudit: (() => void) | null = null;
@@ -246,7 +275,7 @@ export default function App() {
       setAuditLogs([]);
     }
 
-    // 6. Office Cases Ledger (Authorized Office Admin, Manager, Executive, Admin only — contains patient PII)
+    // 6. Office Cases Ledger (Authorized Office Admin, Accounting, Manager, Executive, Admin only)
     let unsubOfficeCases: (() => void) | null = null;
     if (canAccessOfficeCases) {
       unsubOfficeCases = onSnapshot(
@@ -271,7 +300,14 @@ export default function App() {
       if (unsubAudit) unsubAudit();
       if (unsubOfficeCases) unsubOfficeCases();
     };
-  }, [authReady, firebaseUser, currentUser?.uid, currentUser?.role, currentUser?.active, showToast]);
+  }, [
+    authReady,
+    firebaseUser,
+    currentUser?.uid,
+    currentUser?.role,
+    isApprovedAndActive,
+    showToast,
+  ]);
 
   // Compute Executive & Daily Summary Metrics in Real Time
   const summary: ExecutiveSummaryMetrics = useMemo(() => {
@@ -389,29 +425,18 @@ export default function App() {
     setActiveTab('map');
   }, []);
 
-  const handleOpenNewDeal = useCallback(() => {
-    setActiveTab('pipeline');
-    setOpenAddDealSignal((n) => n + 1);
-  }, []);
-
-  const handleTopBarQuickCreate = useCallback(() => {
+  const handleOpenNewCase = useCallback(() => {
     const canWriteOffice =
       currentUser?.role === 'admin' ||
       currentUser?.role === 'manager' ||
-      currentUser?.role === 'office_admin';
+      currentUser?.role === 'office_admin' ||
+      currentUser?.role === 'sales';
 
-    if (
-      canWriteOffice &&
-      (activeTab === 'office_cases' || currentUser?.role === 'office_admin')
-    ) {
-      setActiveTab('office_cases');
+    setActiveTab('office_cases');
+    if (canWriteOffice) {
       setOpenAddOfficeCaseSignal((n) => n + 1);
-      return;
     }
-
-    setActiveTab('pipeline');
-    setOpenAddDealSignal((n) => n + 1);
-  }, [activeTab, currentUser?.role]);
+  }, [currentUser?.role]);
 
   const handleSignOut = async () => {
     await signOut(auth);
@@ -441,8 +466,24 @@ export default function App() {
     );
   }
 
-  if (!firebaseUser || !currentUser) {
+  if (!firebaseUser) {
     return <LoginView />;
+  }
+
+  // Mandatory Registration & Admin Approval Gate: unapproved users cannot access any company data
+  if (
+    !currentUser ||
+    currentUser.approvalStatus === 'pending' ||
+    currentUser.approvalStatus === 'rejected'
+  ) {
+    return (
+      <RegistrationGateView
+        firebaseUser={firebaseUser}
+        profile={currentUser}
+        onRegistered={(savedProfile) => setCurrentUser(savedProfile)}
+        onSignOut={() => void handleSignOut()}
+      />
+    );
   }
 
   if (!currentUser.active) {
@@ -478,30 +519,49 @@ export default function App() {
     currentUser.role === 'manager';
 
   const canAccessOfficeCases =
-    canAccessAdmin || currentUser.role === 'office_admin';
+    canAccessAdmin ||
+    currentUser.role === 'office_admin' ||
+    currentUser.role === 'sales' ||
+    currentUser.role === 'accounting';
+
+  const canCreateCase =
+    currentUser.role === 'admin' ||
+    currentUser.role === 'manager' ||
+    currentUser.role === 'office_admin' ||
+    currentUser.role === 'sales';
+
+  const pendingRegistrationsCount = users.filter((u) => u.approvalStatus === 'pending').length;
 
   const navItems: {
     id: ActiveTab;
     label: string;
     shortLabel: string;
     icon: React.ComponentType<{ className?: string }>;
+    badgeCount?: number;
   }[] = [
     { id: 'dashboard', label: 'ภาพรวมผู้บริหาร', shortLabel: 'ภาพรวม', icon: LayoutDashboard },
     ...(canAccessOfficeCases
       ? [
           {
             id: 'office_cases' as ActiveTab,
-            label: 'กรอกข้อมูลเคส (ออฟฟิศ)',
-            shortLabel: 'ออฟฟิศ',
+            label: 'รับเคส / ข้อมูลเคส',
+            shortLabel: 'รับเคส',
             icon: ClipboardList,
           },
         ]
       : []),
     { id: 'map', label: 'แผนที่โรงพยาบาล', shortLabel: 'แผนที่', icon: MapPin },
-    { id: 'pipeline', label: 'ลูกค้าและเคสการขาย', shortLabel: 'การขาย', icon: Briefcase },
     { id: 'analytics', label: 'วิเคราะห์เชิงลึก', shortLabel: 'กราฟ', icon: BarChart3 },
     ...(canAccessAdmin
-      ? [{ id: 'admin' as ActiveTab, label: 'แอดมินและสิทธิ์', shortLabel: 'แอดมิน', icon: Shield }]
+      ? [
+          {
+            id: 'admin' as ActiveTab,
+            label: 'แอดมินและสิทธิ์',
+            shortLabel: 'แอดมิน',
+            icon: Shield,
+            badgeCount: pendingRegistrationsCount,
+          },
+        ]
       : []),
   ];
 
@@ -559,7 +619,12 @@ export default function App() {
                     active ? 'text-[#ff5e1e]' : 'text-[#aa897f]'
                   }`}
                 />
-                <span>{item.label}</span>
+                <span className="flex-1 text-left">{item.label}</span>
+                {item.badgeCount && item.badgeCount > 0 ? (
+                  <span className="font-mono tabular-nums text-[11px] font-bold text-[#FFCF90] bg-[#FF5E1E]/25 border border-[#FF5E1E]/40 px-1.5 py-0.5 rounded-md">
+                    {item.badgeCount}
+                  </span>
+                ) : null}
               </button>
             );
           })}
@@ -574,8 +639,8 @@ export default function App() {
               <div className="text-xs font-semibold text-white truncate">
                 {currentUser.displayName}
               </div>
-              <div className={`text-[11px] font-medium ${ROLE_META[currentUser.role].textClass}`}>
-                {ROLE_META[currentUser.role].label}
+              <div className={`text-[11px] font-medium ${(ROLE_META[currentUser.role] ?? ROLE_META.employee).textClass}`}>
+                {(ROLE_META[currentUser.role] ?? ROLE_META.employee).label}
               </div>
               <div className="text-[10px] text-[#aa897f] truncate">
                 {currentUser.territory}
@@ -619,11 +684,11 @@ export default function App() {
                 value={globalSearch}
                 onChange={(e) => setGlobalSearch(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && globalSearch.trim()) {
-                    setActiveTab('pipeline');
+                  if (e.key === 'Enter' && globalSearch.trim() && canAccessOfficeCases) {
+                    setActiveTab('office_cases');
                   }
                 }}
-                placeholder="ค้นหาเคสผ่าตัด, โรงพยาบาล, หรือผู้แทนขาย..."
+                placeholder="ค้นหาเคสผ่าตัด, โรงพยาบาล, ชื่อคนไข้ หรือฝ่ายขาย..."
                 className="glass-input w-full h-9 pl-10 pr-8 text-xs rounded-xl"
               />
               {globalSearch && (
@@ -640,19 +705,17 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={handleTopBarQuickCreate}
-              className="orange-cta min-h-[38px] px-3 sm:px-3.5 py-2 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">
-                {activeTab === 'office_cases' || currentUser.role === 'office_admin'
-                  ? 'รับเคสออฟฟิศใหม่'
-                  : 'บันทึกเคสใหม่'}
-              </span>
-              <span className="sm:hidden">เคสใหม่</span>
-            </button>
+            {canCreateCase && (
+              <button
+                type="button"
+                onClick={handleOpenNewCase}
+                className="orange-cta min-h-[38px] px-3 sm:px-3.5 py-2 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">รับเคสใหม่</span>
+                <span className="sm:hidden">รับเคส</span>
+              </button>
+            )}
 
             <button
               type="button"
@@ -700,7 +763,7 @@ export default function App() {
               onExportPdf={() => void handleExportPdf()}
               onBroadcastDailySummary={handleBroadcastDailySummary}
               onJumpToMap={handleJumpToMap}
-              onOpenNewDeal={handleOpenNewDeal}
+              onOpenNewDeal={handleOpenNewCase}
               onNotifyToast={showToast}
             />
           )}
@@ -723,24 +786,6 @@ export default function App() {
               focusLookupHospitals={hospitals}
               focusedHospitalId={focusedHospitalId}
               onOpenOfficeCases={canAccessOfficeCases ? () => setActiveTab('office_cases') : undefined}
-            />
-          )}
-
-          {activeTab === 'pipeline' && (
-            <CustomersDealsView
-              currentUser={currentUser}
-              hospitals={hospitals}
-              deals={deals}
-              officeCases={officeCases}
-              globalSearch={globalSearch}
-              preselectedHospitalForDeal={preselectedHospitalForDeal}
-              openAddHospitalSignal={openAddHospitalSignal}
-              openAddDealSignal={openAddDealSignal}
-              onConsumedAddHospitalSignal={() => setOpenAddHospitalSignal(0)}
-              onConsumedAddDealSignal={() => setOpenAddDealSignal(0)}
-              onClearPreselectedHospital={() => setPreselectedHospitalForDeal(null)}
-              onJumpToMap={handleJumpToMap}
-              onNotifyToast={showToast}
             />
           )}
 

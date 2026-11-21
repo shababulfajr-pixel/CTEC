@@ -14,8 +14,10 @@ import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import {
   BOOTSTRAP_ADMIN_EMAIL,
   DEAL_STAGE_META,
+  DEFAULT_DEPARTMENT_BY_ROLE,
   getTodayDateKey,
   ORG_ID,
+  ROLE_META,
   type AuditTargetType,
   type Deal,
   type DealStage,
@@ -25,6 +27,8 @@ import {
   type NotificationType,
   type ProductCategory,
   type RegionName,
+  type RegistrationRole,
+  type UserApprovalStatus,
   type UserProfile,
   type UserRole,
 } from '../types';
@@ -38,7 +42,7 @@ function clampNumber(val: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
 
-export async function ensureUserProfile(user: User): Promise<UserProfile> {
+export async function fetchExistingUserProfile(user: User): Promise<UserProfile | null> {
   const userRef = doc(db, 'users', user.uid);
   const privateRef = doc(db, 'users', user.uid, 'private', 'info');
 
@@ -48,40 +52,50 @@ export async function ensureUserProfile(user: User): Promise<UserProfile> {
       user.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase() && user.emailVerified;
 
     if (!snap.exists()) {
-      const displayName = clampString(user.displayName || user.email?.split('@')[0] || 'ผู้ใช้งาน', 120);
-      const profilePayload = {
+      // Only the verified bootstrapped admin auto-initializes; everyone else must register & await admin approval
+      if (!isBootstrap) {
+        return null;
+      }
+
+      const displayName = clampString(
+        user.displayName || user.email?.split('@')[0] || 'ผู้ดูแลระบบ',
+        120
+      );
+      await setDoc(userRef, {
         uid: user.uid,
         orgId: ORG_ID,
         displayName,
-        role: (isBootstrap ? 'admin' : 'sales') as UserRole,
-        department: isBootstrap ? 'ฝ่ายบริหารและระบบกลาง' : 'ฝ่ายขายเครื่องมือแพทย์',
-        territory: 'กรุงเทพและปริมณฑล',
+        role: 'admin' as UserRole,
+        requestedRole: 'admin' as UserRole,
+        approvalStatus: 'approved' as UserApprovalStatus,
+        department: DEFAULT_DEPARTMENT_BY_ROLE.admin,
+        territory: 'ทั่วประเทศ',
         active: true,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      };
-      await setDoc(userRef, profilePayload);
+      });
 
-      const privatePayload = {
+      await setDoc(privateRef, {
         uid: user.uid,
         email: clampString(user.email, 200),
         phone: '',
         photoURL: clampString(user.photoURL, 500),
         updatedAt: serverTimestamp(),
-      };
-      await setDoc(privateRef, privatePayload);
+      });
 
       const createdSnap = await getDoc(userRef);
       return { id: createdSnap.id, ...(createdSnap.data() as Omit<UserProfile, 'id'>) };
     }
 
-    // Keep private info synced
+    // Keep private info synced non-blockingly
     try {
       const privSnap = await getDoc(privateRef);
       const privatePayload = {
         uid: user.uid,
         email: clampString(user.email, 200),
-        phone: privSnap.exists() ? clampString((privSnap.data() as { phone?: string }).phone, 40) : '',
+        phone: privSnap.exists()
+          ? clampString((privSnap.data() as { phone?: string }).phone, 40)
+          : '',
         photoURL: clampString(user.photoURL, 500),
         updatedAt: serverTimestamp(),
       };
@@ -100,6 +114,84 @@ export async function ensureUserProfile(user: User): Promise<UserProfile> {
     }
 
     return { id: snap.id, ...(snap.data() as Omit<UserProfile, 'id'>) };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
+  }
+}
+
+export interface UserRegistrationInput {
+  displayName: string;
+  requestedRole: RegistrationRole;
+  department?: string;
+  territory: string;
+  phone?: string;
+}
+
+export async function submitUserRegistration(
+  user: User,
+  input: UserRegistrationInput,
+  existingProfile: UserProfile | null
+): Promise<UserProfile> {
+  const userRef = doc(db, 'users', user.uid);
+  const privateRef = doc(db, 'users', user.uid, 'private', 'info');
+  const safeName = clampString(input.displayName, 120);
+  const safeDept = clampString(
+    input.department || DEFAULT_DEPARTMENT_BY_ROLE[input.requestedRole],
+    80
+  );
+  const safeTerritory = clampString(input.territory || 'กรุงเทพและปริมณฑล', 80);
+  const safePhone = clampString(input.phone, 40);
+
+  try {
+    if (!existingProfile) {
+      // First-time registration: strictly locked (role: employee, active: false, approvalStatus: pending)
+      await setDoc(userRef, {
+        uid: user.uid,
+        orgId: ORG_ID,
+        displayName: safeName,
+        role: 'employee' as UserRole,
+        requestedRole: input.requestedRole,
+        approvalStatus: 'pending' as UserApprovalStatus,
+        department: safeDept,
+        territory: safeTerritory,
+        active: false,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      // Editing/resubmitting while pending or rejected (role & active remain locked)
+      await updateDoc(userRef, {
+        displayName: safeName,
+        requestedRole: input.requestedRole,
+        approvalStatus: 'pending' as UserApprovalStatus,
+        department: safeDept,
+        territory: safeTerritory,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    // Save/update private contact info
+    const privSnap = await getDoc(privateRef);
+    const privPayload = {
+      uid: user.uid,
+      email: clampString(user.email, 200),
+      phone: safePhone,
+      photoURL: clampString(user.photoURL, 500),
+      updatedAt: serverTimestamp(),
+    };
+    if (privSnap.exists()) {
+      await updateDoc(privateRef, {
+        email: privPayload.email,
+        phone: privPayload.phone,
+        photoURL: privPayload.photoURL,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(privateRef, privPayload);
+    }
+
+    const latestSnap = await getDoc(userRef);
+    return { id: latestSnap.id, ...(latestSnap.data() as Omit<UserProfile, 'id'>) };
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
   }
@@ -619,6 +711,63 @@ export async function deleteDeal(
   }
 }
 
+export async function approveUserRegistration(
+  targetUser: UserProfile,
+  assignedRole: UserRole,
+  actor: UserProfile
+) {
+  const path = `users/${targetUser.uid}`;
+  try {
+    await updateDoc(doc(db, 'users', targetUser.uid), {
+      displayName: targetUser.displayName,
+      role: assignedRole,
+      approvalStatus: 'approved' as UserApprovalStatus,
+      department: clampString(
+        targetUser.department || DEFAULT_DEPARTMENT_BY_ROLE[assignedRole],
+        80
+      ),
+      territory: clampString(targetUser.territory || 'ทั่วประเทศ', 80),
+      active: true,
+      updatedAt: serverTimestamp(),
+    });
+
+    await logAuditEvent({
+      action: 'อนุมัติการลงทะเบียนผู้ใช้งาน',
+      targetType: 'user',
+      targetId: targetUser.uid,
+      targetLabel: targetUser.displayName,
+      actorId: actor.uid,
+      actorName: actor.displayName,
+      details: `อนุมัติเข้าใช้งานในตำแหน่ง ${ROLE_META[assignedRole].label}`,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function rejectUserRegistration(targetUser: UserProfile, actor: UserProfile) {
+  const path = `users/${targetUser.uid}`;
+  try {
+    await updateDoc(doc(db, 'users', targetUser.uid), {
+      approvalStatus: 'rejected' as UserApprovalStatus,
+      active: false,
+      updatedAt: serverTimestamp(),
+    });
+
+    await logAuditEvent({
+      action: 'ปฏิเสธคำขอลงทะเบียนผู้ใช้งาน',
+      targetType: 'user',
+      targetId: targetUser.uid,
+      targetLabel: targetUser.displayName,
+      actorId: actor.uid,
+      actorName: actor.displayName,
+      details: `ปฏิเสธคำขอลงทะเบียนตำแหน่ง ${ROLE_META[targetUser.requestedRole || targetUser.role].label}`,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
 export async function updateUserRoleAndStatus(
   targetUser: UserProfile,
   updates: {
@@ -626,14 +775,19 @@ export async function updateUserRoleAndStatus(
     department: string;
     territory: string;
     active: boolean;
+    approvalStatus?: UserApprovalStatus;
   },
   actor: UserProfile
 ) {
   const path = `users/${targetUser.uid}`;
   try {
+    const nextApprovalStatus: UserApprovalStatus =
+      updates.approvalStatus ?? (updates.active ? 'approved' : targetUser.approvalStatus || 'approved');
+
     await updateDoc(doc(db, 'users', targetUser.uid), {
       displayName: targetUser.displayName,
       role: updates.role,
+      approvalStatus: nextApprovalStatus,
       department: clampString(updates.department, 80),
       territory: clampString(updates.territory, 80),
       active: updates.active,
@@ -647,7 +801,7 @@ export async function updateUserRoleAndStatus(
       targetLabel: targetUser.displayName,
       actorId: actor.uid,
       actorName: actor.displayName,
-      details: `บทบาท ${targetUser.role} → ${updates.role} · สถานะ ${updates.active ? 'เปิดใช้งาน' : 'ระงับสิทธิ์'}`,
+      details: `ตำแหน่ง ${ROLE_META[targetUser.role]?.label || targetUser.role} → ${ROLE_META[updates.role].label} · สถานะ ${updates.active ? 'เปิดใช้งาน' : 'ระงับสิทธิ์'}`,
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);

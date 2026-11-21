@@ -717,7 +717,7 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
       {/* Top KPI Strip (Clean Single-Elevation Glass Tiles, Tabular Numerals) */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
         <div className="glass-panel rounded-2xl p-4">
-          <div className="text-xs text-[#B5BDCB]">ฐานข้อมูล รพ. บนแผนที่</div>
+          <div className="text-xs text-[#B5BDCB]">ฐานข้อมูลโรงพยาบาล</div>
           <div className="mt-1.5 text-2xl font-bold font-mono tabular-nums text-[#F4F6FB]">
             {kpiStats.totalHospitals.toLocaleString('th-TH')}
             <span className="text-xs font-sans font-normal text-[#8E97AB] ml-1.5">แห่ง</span>

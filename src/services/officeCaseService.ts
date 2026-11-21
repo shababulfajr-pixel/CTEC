@@ -486,7 +486,13 @@ function mergeImportedIntoExisting(
   const pickNum = (inc: number, cur: number) => (inc > 0 ? inc : cur);
 
   const mergedDeliveryDate = pickStr(incoming.deliveryDate, base.deliveryDate);
+  const mergedDeliveryChannel = pickStr(incoming.deliveryChannel, base.deliveryChannel);
+  const mergedDeliveredBy = pickStr(incoming.deliveredBy, base.deliveredBy);
+  const mergedEmsTrackingNo = pickStr(incoming.emsTrackingNo, base.emsTrackingNo);
   const mergedSterilizeOutDate = pickStr(incoming.sterilizeOutDate, base.sterilizeOutDate);
+  const mergedSterilizeReturnDate = pickStr(incoming.sterilizeReturnDate, base.sterilizeReturnDate);
+  const mergedQcReceiveDate = pickStr(incoming.qcReceiveDate, base.qcReceiveDate);
+  const mergedCertificateNo = pickStr(incoming.certificateNo, base.certificateNo);
 
   // Preserve status progression (delivered > sterilizing > in_progress) unless incoming explicitly upgrades
   const rank: Record<OfficeCaseWorkflowStatus, number> = {
@@ -498,8 +504,21 @@ function mergeImportedIntoExisting(
     rank[incoming.workflowStatus] >= rank[base.workflowStatus]
       ? incoming.workflowStatus
       : base.workflowStatus;
-  if (mergedDeliveryDate) nextStatus = 'delivered';
-  else if (mergedSterilizeOutDate && nextStatus === 'in_progress') nextStatus = 'sterilizing';
+  if (
+    mergedDeliveryDate ||
+    mergedEmsTrackingNo ||
+    (mergedDeliveryChannel && mergedDeliveredBy)
+  ) {
+    nextStatus = 'delivered';
+  } else if (
+    (mergedSterilizeOutDate ||
+      mergedSterilizeReturnDate ||
+      mergedQcReceiveDate ||
+      mergedCertificateNo) &&
+    nextStatus === 'in_progress'
+  ) {
+    nextStatus = 'sterilizing';
+  }
 
   return {
     salesSeqNo: pickNum(incoming.salesSeqNo, base.salesSeqNo),
@@ -539,16 +558,16 @@ function mergeImportedIntoExisting(
     surgeryDate: pickStr(incoming.surgeryDate, base.surgeryDate),
     caseReceiver: pickStr(incoming.caseReceiver, base.caseReceiver),
     sterilizeOutDate: mergedSterilizeOutDate,
-    sterilizeReturnDate: pickStr(incoming.sterilizeReturnDate, base.sterilizeReturnDate),
+    sterilizeReturnDate: mergedSterilizeReturnDate,
     radiationMinKgy: pickStr(incoming.radiationMinKgy, base.radiationMinKgy),
     radiationMaxKgy: pickStr(incoming.radiationMaxKgy, base.radiationMaxKgy),
     doseUniformity: pickStr(incoming.doseUniformity, base.doseUniformity),
-    qcReceiveDate: pickStr(incoming.qcReceiveDate, base.qcReceiveDate),
-    certificateNo: pickStr(incoming.certificateNo, base.certificateNo),
+    qcReceiveDate: mergedQcReceiveDate,
+    certificateNo: mergedCertificateNo,
     deliveryDate: mergedDeliveryDate,
-    deliveryChannel: pickStr(incoming.deliveryChannel, base.deliveryChannel),
-    deliveredBy: pickStr(incoming.deliveredBy, base.deliveredBy),
-    emsTrackingNo: pickStr(incoming.emsTrackingNo, base.emsTrackingNo),
+    deliveryChannel: mergedDeliveryChannel,
+    deliveredBy: mergedDeliveredBy,
+    emsTrackingNo: mergedEmsTrackingNo,
     shippingInfo: pickStr(incoming.shippingInfo, base.shippingInfo),
     receiptAddress: pickStr(incoming.receiptAddress, base.receiptAddress),
     packageInfo: pickStr(incoming.packageInfo, base.packageInfo),

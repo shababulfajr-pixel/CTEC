@@ -1,5 +1,6 @@
 import express from 'express';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { Request, Response } from 'express';
@@ -36,6 +37,7 @@ function injectRuntimeConfig(html: string): string {
 
 async function startServer() {
   const app = express();
+  const httpServer = http.createServer(app);
   const port = Number(process.env.PORT) || 3000;
   const isProd = process.env.NODE_ENV === 'production';
 
@@ -48,8 +50,13 @@ async function startServer() {
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
+    const hmrDisabled = process.env.DISABLE_HMR === 'true';
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        ws: { server: httpServer },
+        hmr: hmrDisabled ? false : { server: httpServer },
+      },
       appType: 'custom',
     });
 
@@ -90,7 +97,7 @@ async function startServer() {
     });
   }
 
-  app.listen(port, '0.0.0.0', () => {
+  httpServer.listen(port, '0.0.0.0', () => {
     console.log(`CTEC CRM server listening on http://0.0.0.0:${port}`);
   });
 }

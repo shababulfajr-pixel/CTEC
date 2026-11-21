@@ -252,6 +252,11 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
   const canWrite =
     currentUser.role === 'admin' ||
     currentUser.role === 'manager' ||
+    currentUser.role === 'office_admin' ||
+    currentUser.role === 'sales';
+  const canImportExcel =
+    currentUser.role === 'admin' ||
+    currentUser.role === 'manager' ||
     currentUser.role === 'office_admin';
 
   useEffect(() => {
@@ -652,18 +657,18 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
             <span aria-hidden="true">·</span>
             <span className="font-mono">ICR0002/2569</span>
             <span aria-hidden="true">·</span>
-            <span>ระบบแอดมินออฟฟิศ</span>
+            <span>ระบบรับเคสกลาง (ฝ่ายขาย &amp; แอดมิน)</span>
           </div>
           <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-            ทะเบียนรับงาน กรอกข้อมูลเคส ฆ่าเชื้อ และจัดส่ง (ออฟฟิศ)
+            รับเคสใหม่และทะเบียนข้อมูลเคส
           </h1>
           <p className="text-xs sm:text-sm text-[#B5BDCB]">
-            รับเคสแบบยืดหยุ่น — กรอกเฉพาะข้อมูลที่มีแล้วบันทึกทันที จากนั้นค่อยกดอัปเดตส่งฆ่าเชื้อหรืออัปเดตจัดส่งทีหลังได้ทุกเคส
+            ฝ่ายขายและแอดมินใช้ฐานข้อมูลเดียวกัน — กรอกเฉพาะข้อมูลที่มีเวลามีเคสแล้วบันทึกทันที จากนั้นอัปเดตส่งฆ่าเชื้อและจัดส่งต่อได้ทุกเคส
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {canWrite && (
+          {canImportExcel && (
             <button
               type="button"
               onClick={() => setShowImportModal(true)}
@@ -697,12 +702,12 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
         </div>
       </div>
 
-      {/* Read-only notice for Executive role */}
+      {/* Read-only notice for Executive / Accounting roles */}
       {!canWrite && (
         <div className="glass-panel rounded-2xl px-4 py-3 text-xs text-[#FFCF90] flex items-center gap-2">
           <Lock className="w-4 h-4 shrink-0" />
           <span>
-            โหมดอ่านและส่งออกรายงานสำหรับผู้บริหาร — เฉพาะแอดมินออฟฟิศ ผู้จัดการ และผู้ดูแลระบบเท่านั้นที่สามารถเพิ่มหรือแก้ไขเคสได้
+            โหมดอ่านและส่งออกรายงาน — เฉพาะพนักงานฝ่ายขาย แอดมินออฟฟิศ ผู้จัดการ และผู้ดูแลระบบเท่านั้นที่สามารถรับเคสใหม่หรือแก้ไขเคสได้
           </span>
         </div>
       )}
@@ -963,12 +968,21 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                       <span>รับงาน: {item.receivedDate || '-'}</span>
                       <span>ผ่าตัด: {item.surgeryDate || '-'}</span>
                       <span>รับเคส: {item.caseReceiver || '-'}</span>
+                      {(item.sterilizeOutDate || item.sterilizeReturnDate || item.qcReceiveDate) && (
+                        <span className="font-mono text-sky-300">
+                          ฆ่าเชื้อ: {item.sterilizeOutDate || item.sterilizeReturnDate || item.qcReceiveDate}
+                        </span>
+                      )}
                       {item.certificateNo && (
                         <span className="font-mono text-sky-300">Cert: {item.certificateNo}</span>
                       )}
-                      {item.deliveryDate && (
+                      {(item.deliveryDate || item.deliveryChannel || item.deliveredBy || item.emsTrackingNo) && (
                         <span className="text-emerald-300">
-                          ส่ง {item.deliveryDate} ({item.deliveryChannel || '-'})
+                          ส่ง {item.deliveryDate || '-'}
+                          {item.deliveryChannel || item.deliveredBy
+                            ? ` (${[item.deliveryChannel, item.deliveredBy].filter(Boolean).join(' · ')})`
+                            : ''}
+                          {item.emsTrackingNo ? ` · EMS ${item.emsTrackingNo}` : ''}
                         </span>
                       )}
                     </div>
@@ -1126,10 +1140,13 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                         <td className="py-3.5 px-4 align-top">
                           <div className="font-mono text-[#DFE2EF]">
                             ส่ง: {item.sterilizeOutDate || '-'}
+                            {item.sterilizeReturnDate ? ` · รับ: ${item.sterilizeReturnDate}` : ''}
                           </div>
-                          {item.certificateNo && (
+                          {(item.qcReceiveDate || item.certificateNo) && (
                             <div className="font-mono text-[11px] text-sky-300 mt-0.5">
-                              {item.certificateNo}
+                              {item.certificateNo || ''}
+                              {item.certificateNo && item.qcReceiveDate ? ' · ' : ''}
+                              {item.qcReceiveDate ? `QA ${item.qcReceiveDate}` : ''}
                             </div>
                           )}
                           {(item.radiationMinKgy || item.radiationMaxKgy) && (
@@ -1145,8 +1162,8 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                             {item.price > 0 ? formatCurrency(item.price) : 'รอระบุราคา'}
                           </div>
                           <div className="text-[11px] text-[#B5BDCB] mt-0.5">
-                            {item.deliveryDate
-                              ? `ส่ง ${item.deliveryDate} · ${item.deliveryChannel || '-'} (${item.deliveredBy || '-'})`
+                            {item.deliveryDate || item.deliveryChannel || item.deliveredBy || item.emsTrackingNo
+                              ? `ส่ง ${item.deliveryDate || '-'}${item.deliveryChannel || item.deliveredBy ? ` · ${item.deliveryChannel || '-'} (${item.deliveredBy || '-'})` : ''}`
                               : 'ยังไม่จัดส่ง'}
                           </div>
                           <div className="text-[11px] text-[#8E97AB] mt-0.5 truncate max-w-[175px]">

@@ -38,55 +38,73 @@ service cloud.firestore {
       return exists(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
-    function currentUserRole() {
-      return hasUserDoc()
-        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
-        : 'none';
+    function currentUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
-    function currentUserActive() {
-      return isBootstrappedAdmin() || (
-        hasUserDoc() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true
+    function isApprovedUserRecord(uData) {
+      return uData.active == true && (
+        !('approvalStatus' in uData) || uData.approvalStatus == 'approved'
       );
+    }
+
+    function isApprovedActiveUser() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        hasUserDoc() &&
+        isApprovedUserRecord(currentUserDoc())
+      );
+    }
+
+    function currentUserRole() {
+      return hasUserDoc() ? currentUserDoc().role : 'none';
     }
 
     function isAdmin() {
       return isBootstrappedAdmin() || (
-        isVerifiedUser() &&
-        hasUserDoc() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+        isApprovedActiveUser() &&
+        currentUserRole() == 'admin'
       );
     }
 
     function isManagerOrAbove() {
-      return isVerifiedUser() && currentUserActive() && (
+      return isApprovedActiveUser() && (
         isBootstrappedAdmin() ||
         currentUserRole() in ['admin', 'executive', 'manager']
       );
     }
 
+    function canReadOrgDeals() {
+      return isApprovedActiveUser() && (
+        isBootstrappedAdmin() ||
+        currentUserRole() in ['admin', 'executive', 'manager', 'accounting']
+      );
+    }
+
     function isOfficeStaffOrAbove() {
       return isBootstrappedAdmin() || (
-        isVerifiedUser() &&
-        hasUserDoc() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'executive', 'manager', 'office_admin']
+        isApprovedActiveUser() &&
+        currentUserRole() in ['admin', 'executive', 'manager', 'office_admin', 'sales', 'accounting']
       );
     }
 
     function canWriteOfficeCases() {
       return isBootstrappedAdmin() || (
-        isVerifiedUser() &&
-        hasUserDoc() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'manager', 'office_admin']
+        isApprovedActiveUser() &&
+        currentUserRole() in ['admin', 'manager', 'office_admin', 'sales']
       );
     }
 
     function isValidRole(role) {
-      return role in ['admin', 'executive', 'manager', 'office_admin', 'sales'];
+      return role in ['admin', 'executive', 'manager', 'office_admin', 'sales', 'employee', 'accounting'];
+    }
+
+    function isValidRegistrationRole(role) {
+      return role in ['executive', 'manager', 'office_admin', 'sales', 'employee', 'accounting'];
+    }
+
+    function isValidApprovalStatus(status) {
+      return status in ['pending', 'approved', 'rejected'];
     }
 
     function isValidRegion(region) {
@@ -152,12 +170,15 @@ service cloud.firestore {
         'uid', 'orgId', 'displayName', 'role', 'department', 'territory', 'active', 'createdAt', 'updatedAt'
       ]) &&
       data.keys().hasOnly([
-        'uid', 'orgId', 'displayName', 'role', 'department', 'territory', 'active', 'createdAt', 'updatedAt'
+        'uid', 'orgId', 'displayName', 'role', 'requestedRole', 'approvalStatus',
+        'department', 'territory', 'active', 'createdAt', 'updatedAt'
       ]) &&
       isValidId(data.uid) &&
       data.orgId == 'ctec-medical' &&
       data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
       isValidRole(data.role) &&
+      (!('requestedRole' in data) || isValidRole(data.requestedRole)) &&
+      (!('approvalStatus' in data) || isValidApprovalStatus(data.approvalStatus)) &&
       data.department is string && data.department.size() <= 80 &&
       data.territory is string && data.territory.size() <= 80 &&
       data.active is bool &&
@@ -407,13 +428,16 @@ service cloud.firestore {
     // Collection Rules
     // -------------------------------------------------------------------------
 
-    // 1. Users (Public Team Metadata + RBAC)
+    // 1. Users (Registration Gate + Public Team Metadata + RBAC)
     match /users/{userId} {
+      // Owner can always read own profile to check pending/approved status; other users must be approved & active.
       allow get: if isVerifiedUser() && isValidId(userId) && (
-        userId == request.auth.uid || (resource != null && existing().orgId == 'ctec-medical')
+        userId == request.auth.uid || (resource != null && existing().orgId == 'ctec-medical' && isApprovedActiveUser())
       );
-      allow list: if isVerifiedUser() && resource.data.orgId == 'ctec-medical';
+      allow list: if isVerifiedUser() && resource.data.orgId == 'ctec-medical' && isApprovedActiveUser();
 
+      // Strict Registration Gate: new users can ONLY create a locked pending registration (active == false, role == 'employee')
+      // Only the verified bootstrapped admin can self-bootstrap an active admin profile.
       allow create: if isVerifiedUser() &&
         isValidId(userId) &&
         isValidUserProfile(incoming()) &&
@@ -421,8 +445,22 @@ service cloud.firestore {
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
         (
-          (userId == request.auth.uid && isBootstrappedAdmin() && incoming().role == 'admin' && incoming().active == true) ||
-          (userId == request.auth.uid && incoming().role == 'sales' && incoming().active == true)
+          (
+            userId == request.auth.uid &&
+            isBootstrappedAdmin() &&
+            incoming().role == 'admin' &&
+            incoming().active == true &&
+            (!('approvalStatus' in incoming()) || incoming().approvalStatus == 'approved')
+          ) ||
+          (
+            userId == request.auth.uid &&
+            incoming().role == 'employee' &&
+            'requestedRole' in incoming() &&
+            isValidRegistrationRole(incoming().requestedRole) &&
+            'approvalStatus' in incoming() &&
+            incoming().approvalStatus == 'pending' &&
+            incoming().active == false
+          )
         );
 
       allow update: if isVerifiedUser() &&
@@ -433,11 +471,35 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
         (
-          // Tier 1: Admin updating role, active status, department, territory
-          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'role', 'department', 'territory', 'active', 'updatedAt'])) ||
-          // Tier 2: Owner updating own non-RBAC profile fields only
-          (userId == request.auth.uid && incoming().role == existing().role && incoming().active == existing().active &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'department', 'territory', 'updatedAt']))
+          // Tier 1: Admin approving/rejecting registrations or updating RBAC role, active status, department, territory
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'displayName', 'role', 'requestedRole', 'approvalStatus', 'department', 'territory', 'active', 'updatedAt'
+          ])) ||
+          // Tier 2: Unapproved/rejected owner editing own registration details & resubmitting for approval (role stays locked, active stays false)
+          (
+            userId == request.auth.uid &&
+            existing().active == false &&
+            'approvalStatus' in existing() &&
+            existing().approvalStatus in ['pending', 'rejected'] &&
+            incoming().role == existing().role &&
+            incoming().active == false &&
+            'requestedRole' in incoming() &&
+            isValidRegistrationRole(incoming().requestedRole) &&
+            'approvalStatus' in incoming() &&
+            incoming().approvalStatus == 'pending' &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'displayName', 'requestedRole', 'approvalStatus', 'department', 'territory', 'updatedAt'
+            ])
+          ) ||
+          // Tier 3: Approved active owner updating own non-RBAC profile fields only
+          (
+            userId == request.auth.uid &&
+            isApprovedUserRecord(existing()) &&
+            incoming().role == existing().role &&
+            incoming().active == existing().active &&
+            (!('approvalStatus' in existing()) ? !('approvalStatus' in incoming()) : incoming().approvalStatus == existing().approvalStatus) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'department', 'territory', 'updatedAt'])
+          )
         );
 
       allow delete: if false;
@@ -467,10 +529,10 @@ service cloud.firestore {
       }
     }
 
-    // 2. Hospitals (Shared CRM Hospital Accounts & Density Map)
+    // 2. Hospitals (Shared CRM Hospital Accounts — strictly approved active users only)
     match /hospitals/{hospitalId} {
-      allow get: if isVerifiedUser() && isValidId(hospitalId) && existing().orgId == 'ctec-medical';
-      allow list: if isVerifiedUser() && resource.data.orgId == 'ctec-medical';
+      allow get: if isVerifiedUser() && isValidId(hospitalId) && existing().orgId == 'ctec-medical' && isApprovedActiveUser();
+      allow list: if isVerifiedUser() && resource.data.orgId == 'ctec-medical' && isApprovedActiveUser();
 
       allow create: if isVerifiedUser() &&
         isValidId(hospitalId) &&
@@ -478,7 +540,7 @@ service cloud.firestore {
         incoming().ownerId == request.auth.uid &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        currentUserActive();
+        isApprovedActiveUser();
 
       allow update: if isVerifiedUser() &&
         isValidId(hospitalId) &&
@@ -486,6 +548,7 @@ service cloud.firestore {
         incoming().orgId == existing().orgId &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
+        isApprovedActiveUser() &&
         (
           // Tier 1: Admin or Manager can update all mutable hospital fields including reassignment
           (isManagerOrAbove() && incoming().diff(existing()).affectedKeys().hasOnly([
@@ -494,14 +557,14 @@ service cloud.firestore {
             'contactName', 'contactRole', 'contactPhone', 'ownerId', 'ownerName', 'notes', 'updatedAt'
           ])) ||
           // Tier 2: Owner updating own hospital details & case metrics
-          (existing().ownerId == request.auth.uid && incoming().ownerId == existing().ownerId && currentUserActive() &&
+          (existing().ownerId == request.auth.uid && incoming().ownerId == existing().ownerId &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'name', 'address', 'province', 'region', 'lat', 'lng',
               'hospitalType', 'caseCount', 'totalRevenue', 'activeDealsCount', 'status',
               'contactName', 'contactRole', 'contactPhone', 'notes', 'updatedAt'
             ])) ||
-          // Tier 3: Active team member syncing aggregated metrics when closing/logging a deal on a shared hospital
-          (currentUserActive() && incoming().ownerId == existing().ownerId &&
+          // Tier 3: Approved active team member syncing aggregated metrics when closing/logging a deal on a shared hospital
+          (incoming().ownerId == existing().ownerId &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'caseCount', 'totalRevenue', 'activeDealsCount', 'status', 'updatedAt'
             ]))
@@ -510,14 +573,14 @@ service cloud.firestore {
       allow delete: if isVerifiedUser() && isValidId(hospitalId) && isAdmin();
     }
 
-    // 3. Deals (Sales Pipeline — strict owner isolation for sales reps, org-wide for managers/executives/admins)
+    // 3. Deals (Sales Pipeline — strict approval gate + owner isolation for sales/employees, org-wide for managers/executives/admins/accounting)
     match /deals/{dealId} {
-      allow get: if isVerifiedUser() && isValidId(dealId) && (
-        existing().ownerId == request.auth.uid || isManagerOrAbove()
+      allow get: if isVerifiedUser() && isValidId(dealId) && isApprovedActiveUser() && (
+        existing().ownerId == request.auth.uid || canReadOrgDeals()
       );
-      allow list: if isVerifiedUser() && (
+      allow list: if isVerifiedUser() && isApprovedActiveUser() && (
         resource.data.ownerId == request.auth.uid ||
-        (resource.data.orgId == 'ctec-medical' && isManagerOrAbove())
+        (resource.data.orgId == 'ctec-medical' && canReadOrgDeals())
       );
 
       allow create: if isVerifiedUser() &&
@@ -526,7 +589,7 @@ service cloud.firestore {
         incoming().ownerId == request.auth.uid &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        currentUserActive() &&
+        isApprovedActiveUser() &&
         exists(/databases/$(database)/documents/hospitals/$(incoming().hospitalId));
 
       allow update: if isVerifiedUser() &&
@@ -536,6 +599,7 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().hospitalId == existing().hospitalId &&
         incoming().updatedAt == request.time &&
+        isApprovedActiveUser() &&
         (
           // Tier 1: Admin override (including terminal state correction & reassignment)
           (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
@@ -547,29 +611,28 @@ service cloud.firestore {
           (existing().stage != 'won' && existing().stage != 'lost' &&
             incoming().ownerId == existing().ownerId &&
             (existing().ownerId == request.auth.uid || isManagerOrAbove()) &&
-            currentUserActive() &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'title', 'productCategory', 'amount', 'caseVolume',
               'stage', 'probability', 'expectedCloseDate', 'notes', 'updatedAt'
             ]))
         );
 
-      allow delete: if isVerifiedUser() && isValidId(dealId) && (
+      allow delete: if isVerifiedUser() && isValidId(dealId) && isApprovedActiveUser() && (
         isAdmin() || (existing().ownerId == request.auth.uid && existing().stage != 'won')
       );
     }
 
-    // 4. Notifications (Real-time Daily Sales Summaries & Alerts)
+    // 4. Notifications (Real-time Daily Sales Summaries & Alerts — approved active users only)
     match /notifications/{notificationId} {
-      allow get: if isVerifiedUser() && isValidId(notificationId) && existing().orgId == 'ctec-medical';
-      allow list: if isVerifiedUser() && resource.data.orgId == 'ctec-medical';
+      allow get: if isVerifiedUser() && isValidId(notificationId) && existing().orgId == 'ctec-medical' && isApprovedActiveUser();
+      allow list: if isVerifiedUser() && resource.data.orgId == 'ctec-medical' && isApprovedActiveUser();
 
       allow create: if isVerifiedUser() &&
         isValidId(notificationId) &&
         isValidNotification(incoming()) &&
         incoming().createdBy == request.auth.uid &&
         incoming().createdAt == request.time &&
-        currentUserActive();
+        isApprovedActiveUser();
 
       allow update: if false;
       allow delete: if isVerifiedUser() && isValidId(notificationId) && isAdmin();
@@ -585,14 +648,14 @@ service cloud.firestore {
         isValidAuditLog(incoming()) &&
         incoming().actorId == request.auth.uid &&
         incoming().createdAt == request.time &&
-        currentUserActive();
+        isApprovedActiveUser();
 
       allow update: if false;
       allow delete: if false;
     }
 
-    // 6. Office Cases (CTEC Customized Personalized Implant Intake, Sterilization & Delivery Ledger)
-    // Contains patient PII (name, HN, phone, receipt address): strictly restricted to authorized office/admin/management roles.
+    // 6. Office Cases (Unified Sales & Admin Personalized Implant Intake, Sterilization & Delivery Ledger)
+    // Contains patient PII: strictly restricted to approved authorized sales/office/accounting/management/admin roles.
     match /officeCases/{caseId} {
       allow get: if isVerifiedUser() && isValidId(caseId) && existing().orgId == 'ctec-medical' && isOfficeStaffOrAbove();
       allow list: if isVerifiedUser() && resource.data.orgId == 'ctec-medical' && isOfficeStaffOrAbove();

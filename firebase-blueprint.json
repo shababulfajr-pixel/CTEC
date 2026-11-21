@@ -22,7 +22,15 @@
         },
         "role": {
           "type": "string",
-          "enum": ["admin", "executive", "manager", "office_admin", "sales"]
+          "enum": ["admin", "executive", "manager", "office_admin", "sales", "employee", "accounting"]
+        },
+        "requestedRole": {
+          "type": "string",
+          "enum": ["admin", "executive", "manager", "office_admin", "sales", "employee", "accounting"]
+        },
+        "approvalStatus": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"]
         },
         "department": {
           "type": "string",

@@ -3,7 +3,33 @@ import type { Timestamp } from 'firebase/firestore';
 export const ORG_ID = 'ctec-medical' as const;
 export const BOOTSTRAP_ADMIN_EMAIL = 'shababulfajr@gmail.com';
 
-export type UserRole = 'admin' | 'executive' | 'manager' | 'office_admin' | 'sales';
+export type UserRole =
+  | 'admin'
+  | 'executive'
+  | 'manager'
+  | 'office_admin'
+  | 'sales'
+  | 'employee'
+  | 'accounting';
+
+export type RegistrationRole =
+  | 'executive'
+  | 'manager'
+  | 'sales'
+  | 'office_admin'
+  | 'employee'
+  | 'accounting';
+
+export type UserApprovalStatus = 'pending' | 'approved' | 'rejected';
+
+export const REGISTRATION_ROLES: RegistrationRole[] = [
+  'executive',
+  'manager',
+  'sales',
+  'office_admin',
+  'employee',
+  'accounting',
+];
 
 export type RegionName =
   | 'กรุงเทพและปริมณฑล'
@@ -61,6 +87,8 @@ export interface UserProfile {
   orgId: typeof ORG_ID;
   displayName: string;
   role: UserRole;
+  requestedRole?: UserRole;
+  approvalStatus?: UserApprovalStatus;
   department: string;
   territory: string;
   active: boolean;
@@ -371,31 +399,51 @@ export const DEAL_STAGE_META: Record<
   },
 };
 
+export const DEFAULT_DEPARTMENT_BY_ROLE: Record<UserRole, string> = {
+  admin: 'ฝ่ายบริหารและระบบกลาง',
+  executive: 'ฝ่ายผู้บริหาร',
+  manager: 'ฝ่ายจัดการ',
+  sales: 'ฝ่ายขายเครื่องมือแพทย์',
+  office_admin: 'ฝ่ายแอดมินออฟฟิศ',
+  employee: 'พนักงานบริษัท CTEC',
+  accounting: 'ฝ่ายบัญชีและการเงิน',
+};
+
 export const ROLE_META: Record<UserRole, { label: string; description: string; textClass: string }> = {
   admin: {
     label: 'ผู้ดูแลระบบสูงสุด',
-    description: 'จัดการสิทธิ์ผู้ใช้ทั้งหมด ดูและแก้ไขข้อมูลทุกแผนก ปลดล็อกดีล และส่งออกรายงาน',
+    description: 'อนุมัติผู้ลงทะเบียน จัดการสิทธิ์ผู้ใช้ทั้งหมด ดูและแก้ไขข้อมูลทุกแผนก และส่งออกรายงาน',
     textClass: 'text-[#FFB59D]',
   },
   executive: {
-    label: 'ผู้บริหาร (Executive)',
-    description: 'เข้าถึงแดชบอร์ดภาพรวม กราฟวิเคราะห์เชิงลึก แผนที่โรงพยาบาล และส่งออกรายงาน PDF/Excel',
+    label: 'ผู้บริหาร',
+    description: 'เข้าถึงแดชบอร์ดภาพรวม กราฟวิเคราะห์ ผลงานฝ่ายขายรายเดือน แผนที่ รพ. และส่งออกรายงาน PDF/Excel',
     textClass: 'text-[#FFCF90]',
   },
   manager: {
-    label: 'ผู้จัดการฝ่ายขาย',
-    description: 'บริหารทีมขาย ดูแลลูกค้าโรงพยาบาลทุกพื้นที่ อัปเดตดีล และประกาศสรุปยอดขายรายวัน',
+    label: 'ผู้จัดการ',
+    description: 'บริหารทีมขาย ดูแลลูกค้าโรงพยาบาลทุกพื้นที่ อัปเดตดีล/เคส และประกาศสรุปยอดขายรายวัน',
     textClass: 'text-[#EEC058]',
   },
+  sales: {
+    label: 'พนักงานฝ่ายขาย',
+    description: 'รับเคสใหม่และกรอกข้อมูลเคสในฐานข้อมูลเดียวกับแอดมิน พร้อมแสดงชื่อและจำนวนเคสประจำเดือนอัตโนมัติ',
+    textClass: 'text-emerald-300',
+  },
   office_admin: {
-    label: 'แอดมินออฟฟิศ (กรอกเคส)',
-    description: 'กรอกและติดตามข้อมูลเคส Customized Implant ที่ออฟฟิศ บันทึกการฆ่าเชื้อ เลขที่ EMS และส่งออกตาราง Excel',
+    label: 'ฝ่ายแอดมิน',
+    description: 'กรอกและติดตามทะเบียนเคสออฟฟิศ บันทึกการฆ่าเชื้อ เลขที่ EMS และนำเข้า-ส่งออกไฟล์ Excel',
     textClass: 'text-sky-300',
   },
-  sales: {
-    label: 'ผู้แทนขายภาคสนาม',
-    description: 'เพิ่มโรงพยาบาลและติดตามดีลของตนเอง ดูแผนที่ความหนาแน่นเคส และรับแจ้งเตือนเรียลไทม์',
+  employee: {
+    label: 'พนักงานบริษัท',
+    description: 'ดูภาพรวมบริษัท แผนที่โรงพยาบาล และรับแจ้งเตือนความเคลื่อนไหวประจำวันของทีม',
     textClass: 'text-slate-300',
+  },
+  accounting: {
+    label: 'ฝ่ายบัญชี',
+    description: 'ตรวจสอบยอดขาย รายการปิดดีล และทะเบียนเคสออฟฟิศสำหรับตรวจสอบการชำระเงินและออกใบเสร็จ',
+    textClass: 'text-violet-300',
   },
 };
 

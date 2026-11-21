@@ -15,6 +15,7 @@ import {
   Activity,
   ArrowRight,
   Building2,
+  Calendar,
   ChevronRight,
   FileSpreadsheet,
   FileText,
@@ -23,7 +24,9 @@ import {
   Plus,
   RefreshCw,
   Send,
+  Table2,
   Trophy,
+  UserCheck,
   Users,
 } from 'lucide-react';
 import {
@@ -70,6 +73,65 @@ interface DashboardViewProps {
 
 const PIE_COLORS = ['#FF5E1E', '#FFAA00', '#EEC058', '#FFB59D', '#38BDF8', '#34D399'];
 
+const THAI_MONTH_LIST = [
+  { month: 1, short: 'ม.ค.', full: 'มกราคม' },
+  { month: 2, short: 'ก.พ.', full: 'กุมภาพันธ์' },
+  { month: 3, short: 'มี.ค.', full: 'มีนาคม' },
+  { month: 4, short: 'เม.ย.', full: 'เมษายน' },
+  { month: 5, short: 'พ.ค.', full: 'พฤษภาคม' },
+  { month: 6, short: 'มิ.ย.', full: 'มิถุนายน' },
+  { month: 7, short: 'ก.ค.', full: 'กรกฎาคม' },
+  { month: 8, short: 'ส.ค.', full: 'สิงหาคม' },
+  { month: 9, short: 'ก.ย.', full: 'กันยายน' },
+  { month: 10, short: 'ต.ค.', full: 'ตุลาคม' },
+  { month: 11, short: 'พ.ย.', full: 'พฤศจิกายน' },
+  { month: 12, short: 'ธ.ค.', full: 'ธันวาคม' },
+] as const;
+
+function normalizePersonKey(raw?: string | null): string {
+  return (raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+function parseDateToYearMonth(
+  raw?: string | null,
+  fallbackTs?: { toDate?: () => Date } | null
+): { year: number; month: number } | null {
+  const s = (raw || '').trim();
+  if (s) {
+    const isoMatch = s.match(/^(\d{4})-(\d{1,2})/);
+    if (isoMatch) {
+      let yr = Number(isoMatch[1]);
+      const mo = Number(isoMatch[2]);
+      if (yr > 2400) yr -= 543;
+      if (mo >= 1 && mo <= 12) return { year: yr, month: mo };
+    }
+
+    const slashMatch = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})/);
+    if (slashMatch) {
+      const mo = Number(slashMatch[2]);
+      let yr = Number(slashMatch[3]);
+      if (yr < 100) {
+        yr = yr >= 50 ? 2500 + yr - 543 : 2000 + yr;
+      } else if (yr > 2400) {
+        yr -= 543;
+      }
+      if (mo >= 1 && mo <= 12) return { year: yr, month: mo };
+    }
+  }
+
+  if (fallbackTs && typeof fallbackTs.toDate === 'function') {
+    const dt = fallbackTs.toDate();
+    if (!Number.isNaN(dt.getTime())) {
+      return { year: dt.getFullYear(), month: dt.getMonth() + 1 };
+    }
+  }
+
+  return null;
+}
+
 export const DashboardView: React.FC<DashboardViewProps> = ({
   mode,
   currentUser,
@@ -87,8 +149,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onOpenNewDeal,
   onNotifyToast,
 }) => {
+  const nowDate = useMemo(() => new Date(), []);
   const [regionFilter, setRegionFilter] = useState<'all' | RegionName>('all');
-  const [leaderboardSort, setLeaderboardSort] = useState<'revenue' | 'cases'>('revenue');
+  const [leaderboardSort, setLeaderboardSort] = useState<'cases' | 'revenue'>('cases');
+  const [salesYear, setSalesYear] = useState<number>(() => nowDate.getFullYear());
+  const [salesMonth, setSalesMonth] = useState<'all' | number>(() => nowDate.getMonth() + 1);
+  const [salesViewMode, setSalesViewMode] = useState<'monthly' | 'matrix12'>('monthly');
   const [broadcasting, setBroadcasting] = useState(false);
 
   const handleBroadcastClick = async () => {
@@ -215,7 +281,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const topRegionSharePct =
       totalCasesAll > 0 ? Math.round((topRegionCases / totalCasesAll) * 100) : 0;
 
-    const activeUsersCount = users.filter((u) => u.active).length;
+    const activeUsersCount = users.filter(
+      (u) => u.active && (!u.approvalStatus || u.approvalStatus === 'approved')
+    ).length;
+    const pendingUsersCount = users.filter((u) => u.approvalStatus === 'pending').length;
 
     return {
       totalCasesAll,
@@ -230,71 +299,275 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       topRegionCases,
       topRegionSharePct,
       activeUsersCount,
+      pendingUsersCount,
       totalUsersCount: users.length,
     };
   }, [scopedHospitals, scopedDeals, scopedOfficeCases, hospitals, users]);
 
-  // 100% Live Sales Rep / Operator Leaderboard (strictly from live deals & officeCases)
-  const leaderboard = useMemo(() => {
-    const liveMap: Record<
-      string,
-      { name: string; team: string; closedCases: number; revenue: number }
-    > = {};
+  // Approved active sales representatives registered in the system
+  const approvedSalesUsers = useMemo(() => {
+    return users
+      .filter(
+        (u) =>
+          u.role === 'sales' &&
+          u.active &&
+          (!u.approvalStatus || u.approvalStatus === 'approved')
+      )
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'th'));
+  }, [users]);
 
+  // Admin / Office Admin accounts (excluded from appearing as salesperson rows)
+  const adminAccountLookup = useMemo(() => {
+    const uids = new Set<string>();
+    const names = new Set<string>();
+    users.forEach((u) => {
+      if (u.role === 'admin' || u.role === 'office_admin') {
+        uids.add(u.uid);
+        const norm = normalizePersonKey(u.displayName);
+        if (norm) names.add(norm);
+      }
+    });
+    return { uids, names };
+  }, [users]);
+
+  // Available years from current year + live deals & office cases
+  const availableSalesYears = useMemo(() => {
+    const yearSet = new Set<number>([nowDate.getFullYear(), nowDate.getFullYear() - 1, 2024]);
     scopedDeals.forEach((d) => {
-      const key = (d.ownerName || d.ownerId || 'ไม่ระบุผู้ดูแล').trim();
-      if (!liveMap[key]) {
-        liveMap[key] = {
-          name: key,
-          team: 'ฝ่ายขาย (Sales Pipeline)',
-          closedCases: 0,
-          revenue: 0,
-        };
-      }
-      liveMap[key].closedCases += d.caseVolume || 0;
-      if (d.stage === 'won') liveMap[key].revenue += d.amount || 0;
+      const parsed =
+        parseDateToYearMonth(d.dateKey) ||
+        parseDateToYearMonth(d.expectedCloseDate, d.createdAt);
+      if (parsed && parsed.year >= 2020 && parsed.year <= 2035) yearSet.add(parsed.year);
     });
-
     scopedOfficeCases.forEach((oc) => {
-      const key = (oc.caseReceiver || oc.createdByName || 'ทีมออฟฟิศ').trim();
-      if (!liveMap[key]) {
-        liveMap[key] = {
-          name: key,
-          team: 'ทีมประสานงานเคส (ออฟฟิศ)',
-          closedCases: 0,
-          revenue: 0,
-        };
+      const parsed =
+        parseDateToYearMonth(oc.receivedDate) ||
+        parseDateToYearMonth(oc.surgeryDate) ||
+        parseDateToYearMonth(oc.deliveryDate, oc.createdAt);
+      if (parsed && parsed.year >= 2020 && parsed.year <= 2035) yearSet.add(parsed.year);
+    });
+    return Array.from(yearSet).sort((a, b) => b - a);
+  }, [nowDate, scopedDeals, scopedOfficeCases]);
+
+  // Monthly & 12-Month Salesperson Case Count
+  // Connects registered sales users + salesperson names (caseReceiver) from Admin-entered officeCases + sales deals
+  const monthlySalesPerformance = useMemo(() => {
+    interface MonthSlot {
+      cases: number;
+      revenue: number;
+      pipeline: number;
+    }
+
+    interface RepBucket {
+      key: string;
+      uid?: string;
+      name: string;
+      territory: string;
+      isRegisteredSales: boolean;
+      months: Record<number, MonthSlot>;
+    }
+
+    const createEmptyMonths = () => {
+      const months: Record<number, MonthSlot> = {};
+      for (let m = 1; m <= 12; m += 1) {
+        months[m] = { cases: 0, revenue: 0, pipeline: 0 };
       }
-      liveMap[key].closedCases += 1;
-      liveMap[key].revenue += oc.price || 0;
+      return months;
+    };
+
+    const bucketsByKey = new Map<string, RepBucket>();
+    const uidToKey = new Map<string, string>();
+    const nameNormToKey = new Map<string, string>();
+
+    // 1. Seed ALL approved active registered salespeople first
+    approvedSalesUsers.forEach((u) => {
+      const key = `uid:${u.uid}`;
+      bucketsByKey.set(key, {
+        key,
+        uid: u.uid,
+        name: u.displayName,
+        territory: u.territory || 'ทั่วประเทศ',
+        isRegisteredSales: true,
+        months: createEmptyMonths(),
+      });
+      uidToKey.set(u.uid, key);
+      const norm = normalizePersonKey(u.displayName);
+      if (norm) nameNormToKey.set(norm, key);
     });
 
-    const list = Object.values(liveMap);
-    const maxVal = list.reduce(
-      (m, r) => Math.max(m, leaderboardSort === 'revenue' ? r.revenue : r.closedCases),
+    const resolveOrCreateSalesRep = (
+      rawName: string | undefined,
+      uid?: string
+    ): RepBucket | null => {
+      const cleanedName = (rawName || '').trim();
+      const normName = normalizePersonKey(cleanedName);
+
+      // Match registered sales user by exact name or UID first
+      if (normName && nameNormToKey.has(normName)) {
+        return bucketsByKey.get(nameNormToKey.get(normName)!) || null;
+      }
+      if (uid && uidToKey.has(uid)) {
+        return bucketsByKey.get(uidToKey.get(uid)!) || null;
+      }
+
+      // Skip blank placeholders or Admin/Office Admin accounts
+      if (!cleanedName || cleanedName === '-' || cleanedName === 'ไม่ระบุ') {
+        return null;
+      }
+      if (
+        (uid && adminAccountLookup.uids.has(uid)) ||
+        (normName && adminAccountLookup.names.has(normName))
+      ) {
+        return null;
+      }
+
+      const fallbackKey = `sales-name:${normName}`;
+      const existing = bucketsByKey.get(fallbackKey);
+      if (existing) return existing;
+
+      const created: RepBucket = {
+        key: fallbackKey,
+        name: cleanedName,
+        territory: '',
+        isRegisteredSales: false,
+        months: createEmptyMonths(),
+      };
+      bucketsByKey.set(fallbackKey, created);
+      nameNormToKey.set(normName, fallbackKey);
+      return created;
+    };
+
+    // 2. Roll up Admin-entered / Excel-imported office cases linked by salesperson name (caseReceiver)
+    scopedOfficeCases.forEach((oc) => {
+      const parsed =
+        parseDateToYearMonth(oc.receivedDate) ||
+        parseDateToYearMonth(oc.surgeryDate) ||
+        parseDateToYearMonth(oc.deliveryDate, oc.createdAt);
+      if (!parsed || parsed.year !== salesYear) return;
+
+      const salesName = (oc.caseReceiver || '').trim();
+      if (!salesName || salesName === '-') return;
+
+      const bucket = resolveOrCreateSalesRep(salesName);
+      if (!bucket) return;
+
+      const slot = bucket.months[parsed.month];
+      slot.cases += 1;
+      slot.revenue += oc.price || 0;
+    });
+
+    // 3. Roll up Sales Pipeline deals (excluding admin accounts)
+    scopedDeals.forEach((d) => {
+      const parsed =
+        parseDateToYearMonth(d.dateKey) ||
+        parseDateToYearMonth(d.expectedCloseDate, d.createdAt);
+      if (!parsed || parsed.year !== salesYear) return;
+
+      const bucket = resolveOrCreateSalesRep(d.ownerName, d.ownerId);
+      if (!bucket) return;
+
+      const caseQty = d.caseVolume && d.caseVolume > 0 ? d.caseVolume : 1;
+      const slot = bucket.months[parsed.month];
+      slot.cases += caseQty;
+      if (d.stage === 'won') {
+        slot.revenue += d.amount || 0;
+      } else if (d.stage !== 'lost') {
+        slot.pipeline += d.amount || 0;
+      }
+    });
+
+    const rows = Array.from(bucketsByKey.values()).map((bucket) => {
+      let selectedCases = 0;
+      let selectedRevenue = 0;
+      let selectedPipeline = 0;
+      let yearlyCases = 0;
+      let yearlyRevenue = 0;
+
+      for (let m = 1; m <= 12; m += 1) {
+        yearlyCases += bucket.months[m].cases;
+        yearlyRevenue += bucket.months[m].revenue;
+      }
+
+      if (salesMonth === 'all') {
+        selectedCases = yearlyCases;
+        selectedRevenue = yearlyRevenue;
+        for (let m = 1; m <= 12; m += 1) {
+          selectedPipeline += bucket.months[m].pipeline;
+        }
+      } else {
+        selectedCases = bucket.months[salesMonth].cases;
+        selectedRevenue = bucket.months[salesMonth].revenue;
+        selectedPipeline = bucket.months[salesMonth].pipeline;
+      }
+
+      return {
+        ...bucket,
+        closedCases: selectedCases,
+        revenue: selectedRevenue,
+        pipeline: selectedPipeline,
+        yearlyCases,
+        yearlyRevenue,
+      };
+    });
+
+    rows.sort((a, b) => {
+      const primary =
+        leaderboardSort === 'cases'
+          ? b.closedCases - a.closedCases || b.revenue - a.revenue
+          : b.revenue - a.revenue || b.closedCases - a.closedCases;
+      if (primary !== 0) return primary;
+      if (b.yearlyCases !== a.yearlyCases) return b.yearlyCases - a.yearlyCases;
+      if (a.isRegisteredSales !== b.isRegisteredSales) {
+        return a.isRegisteredSales ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name, 'th');
+    });
+
+    const maxVal = rows.reduce(
+      (m, r) => Math.max(m, leaderboardSort === 'cases' ? r.closedCases : r.revenue),
       0
     );
 
-    list.sort((a, b) =>
-      leaderboardSort === 'revenue'
-        ? b.revenue - a.revenue || b.closedCases - a.closedCases
-        : b.closedCases - a.closedCases || b.revenue - a.revenue
-    );
+    const totalRevenuePeriod = rows.reduce((s, r) => s + r.revenue, 0);
+    const totalCasesPeriod = rows.reduce((s, r) => s + r.closedCases, 0);
+    const totalCasesYear = rows.reduce((s, r) => s + r.yearlyCases, 0);
 
-    return list.slice(0, 5).map((item, idx) => ({
+    const ranked = rows.map((item, idx) => ({
       ...item,
       sharePct:
         maxVal > 0
-          ? Math.max(
-              8,
-              Math.round(
-                ((leaderboardSort === 'revenue' ? item.revenue : item.closedCases) / maxVal) * 100
+          ? item.closedCases > 0 || item.revenue > 0
+            ? Math.max(
+                8,
+                Math.round(
+                  ((leaderboardSort === 'cases' ? item.closedCases : item.revenue) / maxVal) * 100
+                )
               )
-            )
+            : 0
           : 0,
-      starPerformer: idx === 0 && (item.revenue > 0 || item.closedCases > 0),
+      starPerformer: idx === 0 && (item.closedCases > 0 || item.revenue > 0),
     }));
-  }, [scopedDeals, scopedOfficeCases, leaderboardSort]);
+
+    return {
+      rows: ranked,
+      totalRevenuePeriod,
+      totalCasesPeriod,
+      totalCasesYear,
+    };
+  }, [
+    approvedSalesUsers,
+    adminAccountLookup,
+    scopedDeals,
+    scopedOfficeCases,
+    salesYear,
+    salesMonth,
+    leaderboardSort,
+  ]);
+
+  const selectedMonthLabel =
+    salesMonth === 'all'
+      ? `ทั้งปี ${salesYear + 543}`
+      : `${THAI_MONTH_LIST[salesMonth - 1]?.full || ''} ${salesYear + 543}`;
 
   // 100% Live Top Hospital Hotspots (merges live CRM hospitals + live officeCases)
   const topHotspots = useMemo(() => {
@@ -530,7 +803,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         {/* KPI 3: Partner Hospitals (Linked CRM + Office Cases) */}
         <div className="glass-panel relative overflow-hidden rounded-2xl p-4 flex flex-col justify-between transition-transform duration-200 hover:-translate-y-0.5">
           <div className="flex items-center justify-between gap-2 text-xs">
-            <span className="text-[#C8B6AE] font-medium">โรงพยาบาลคู่ค้า</span>
+            <span className="text-[#C8B6AE] font-medium">โรงพยาบาล</span>
             <Building2 className="w-4 h-4 text-[#FFB59D]" />
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
@@ -581,8 +854,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               / {displayKpis.totalUsersCount} บัญชี
             </span>
           </div>
-          <div className="mt-3 pt-2 border-t border-white/[0.06] text-[11px] text-[#B5BDCB]">
-            ดีลใหม่วันนี้ +{summary.todayNewDeals} · ไปป์ไลน์ {formatCompactCurrency(summary.activePipelineValue)}
+          <div className="mt-3 pt-2 border-t border-white/[0.06] text-[11px] text-[#B5BDCB] flex items-center justify-between gap-2">
+            <span className="truncate">
+              ฝ่ายขายอนุมัติแล้ว {approvedSalesUsers.length} คน
+            </span>
+            {displayKpis.pendingUsersCount > 0 ? (
+              <span className="text-[#FFCF90] font-semibold shrink-0">
+                รออนุมัติ {displayKpis.pendingUsersCount}
+              </span>
+            ) : (
+              <span className="text-[#8E97AB] font-mono tabular-nums shrink-0">
+                ดีลวันนี้ +{summary.todayNewDeals}
+              </span>
+            )}
           </div>
         </div>
       </section>
@@ -593,54 +877,123 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {/* Section 4: Dashboard Central Split OR Deep Analytics Charts */}
       {mode === 'dashboard' ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-          {/* 60% Column: Live Leaderboard */}
-          <section className="lg:col-span-7 glass-panel rounded-2xl p-5 sm:p-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
-              <div>
-                <div className="flex items-center gap-2">
-                  <Trophy className="w-5 h-5 text-[#FFAA00]" />
-                  <h2 className="text-lg font-semibold text-[#F4F6FB]">
-                    ยอดขายและจำนวนเคสแยกตามผู้รับผิดชอบ
-                  </h2>
+          {/* Monthly Salesperson Case Count Board (Linked from Admin Office Cases + Sales Deals, Salespeople Only) */}
+          <section
+            className={`${
+              salesViewMode === 'matrix12' ? 'lg:col-span-12' : 'lg:col-span-7'
+            } glass-panel rounded-2xl p-5 sm:p-6`}
+          >
+            <div className="flex flex-col gap-3.5 mb-5">
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Trophy className="w-5 h-5 text-[#FFAA00]" />
+                    <h2 className="text-lg font-semibold text-[#F4F6FB]">
+                      จำนวนเคสประจำเดือน
+                    </h2>
+                  </div>
+                  <p className="text-xs text-[#B5BDCB] mt-0.5">
+                    แสดงยอดเคสแยกตามชื่อพนักงานฝ่ายขาย โดยเชื่อมต่อข้อมูลจากเคสที่แอดมินและฝ่ายขายบันทึกไว้โดยอัตโนมัติ
+                  </p>
                 </div>
-                <p className="text-xs text-[#B5BDCB] mt-0.5">
-                  จัดอันดับจากข้อมูลจริงของฝ่ายขายและทีมรับเคสออฟฟิศแบบเรียลไทม์
-                </p>
+
+                {/* View Mode Toggle: Monthly Detail vs 12-Month Table */}
+                <div className="inline-flex items-center p-1 rounded-xl bg-[#0A0E17]/80 border border-white/[0.08] self-start shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setSalesViewMode('monthly')}
+                    className={`px-3 py-1 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
+                      salesViewMode === 'monthly'
+                        ? 'bg-[#262A34] text-[#FFB59D]'
+                        : 'text-[#8E97AB] hover:text-white'
+                    }`}
+                  >
+                    <Calendar className="w-3.5 h-3.5" />
+                    สรุปรายเดือน
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSalesViewMode('matrix12')}
+                    className={`px-3 py-1 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
+                      salesViewMode === 'matrix12'
+                        ? 'bg-[#262A34] text-[#FFB59D]'
+                        : 'text-[#8E97AB] hover:text-white'
+                    }`}
+                  >
+                    <Table2 className="w-3.5 h-3.5" />
+                    ตาราง 12 เดือน
+                  </button>
+                </div>
               </div>
 
-              <div className="inline-flex items-center p-1 rounded-xl bg-[#0A0E17]/80 border border-white/[0.08] self-start">
-                <button
-                  type="button"
-                  onClick={() => setLeaderboardSort('revenue')}
-                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
-                    leaderboardSort === 'revenue'
-                      ? 'bg-[#262A34] text-[#FFB59D]'
-                      : 'text-[#8E97AB] hover:text-white'
-                  }`}
+              {/* Filter Bar: Year, Month, Sort */}
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={salesYear}
+                  onChange={(e) => setSalesYear(Number(e.target.value))}
+                  aria-label="เลือกปีจำนวนเคส"
+                  className="glass-input h-8 px-2.5 rounded-xl text-xs font-medium cursor-pointer"
                 >
-                  ยอดเงิน (Revenue)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setLeaderboardSort('cases')}
-                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
-                    leaderboardSort === 'cases'
-                      ? 'bg-[#262A34] text-[#FFB59D]'
-                      : 'text-[#8E97AB] hover:text-white'
-                  }`}
-                >
-                  จำนวนเคส
-                </button>
+                  {availableSalesYears.map((yr) => (
+                    <option key={yr} value={yr}>
+                      ปี {yr + 543} ({yr})
+                    </option>
+                  ))}
+                </select>
+
+                {salesViewMode === 'monthly' && (
+                  <select
+                    value={salesMonth === 'all' ? 'all' : String(salesMonth)}
+                    onChange={(e) =>
+                      setSalesMonth(e.target.value === 'all' ? 'all' : Number(e.target.value))
+                    }
+                    aria-label="เลือกเดือนจำนวนเคส"
+                    className="glass-input h-8 px-2.5 rounded-xl text-xs font-medium cursor-pointer"
+                  >
+                    <option value="all">รวมทั้งปี (12 เดือน)</option>
+                    {THAI_MONTH_LIST.map((m) => (
+                      <option key={m.month} value={m.month}>
+                        เดือน {m.full}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                <div className="inline-flex items-center p-0.5 rounded-xl bg-[#0A0E17]/80 border border-white/[0.08] sm:ml-auto">
+                  <button
+                    type="button"
+                    onClick={() => setLeaderboardSort('cases')}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                      leaderboardSort === 'cases'
+                        ? 'bg-[#262A34] text-[#FFB59D]'
+                        : 'text-[#8E97AB] hover:text-white'
+                    }`}
+                  >
+                    จำนวนเคส
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLeaderboardSort('revenue')}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                      leaderboardSort === 'revenue'
+                        ? 'bg-[#262A34] text-[#FFB59D]'
+                        : 'text-[#8E97AB] hover:text-white'
+                    }`}
+                  >
+                    ยอดเงิน
+                  </button>
+                </div>
               </div>
             </div>
 
-            {leaderboard.length === 0 ? (
+            {monthlySalesPerformance.rows.length === 0 ? (
               <div className="glass-tile rounded-xl p-8 text-center space-y-3">
+                <UserCheck className="w-8 h-8 text-[#FFCF90] mx-auto opacity-80" />
                 <p className="text-sm font-semibold text-white">
-                  ยังไม่มีข้อมูลผลงานในระบบ
+                  ยังไม่มีข้อมูลเคสของพนักงานฝ่ายขาย
                 </p>
-                <p className="text-xs text-[#B5BDCB]">
-                  เริ่มบันทึกเคสผ่าตัดหรือรายการขายจริง อันดับและยอดขายจะคำนวณขึ้นที่นี่อัตโนมัติ
+                <p className="text-xs text-[#B5BDCB] max-w-md mx-auto leading-relaxed">
+                  เมื่อแอดมินบันทึกเคสพร้อมระบุชื่อผู้รับเคส (ฝ่ายขาย) หรือเมื่อพนักงานฝ่ายขายได้รับอนุมัติเข้าใช้งาน ชื่อและจำนวนเคสแต่ละเดือนจะแสดงขึ้นที่นี่โดยอัตโนมัติ
                 </p>
                 <button
                   type="button"
@@ -648,20 +1001,41 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   className="btn-luxury-orange inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  บันทึกดีล / เคสแรก
+                  บันทึกเคสแรก
                 </button>
               </div>
-            ) : (
+            ) : salesViewMode === 'monthly' ? (
               <div className="space-y-3">
-                {leaderboard.map((rep, idx) => (
+                {salesMonth !== 'all' &&
+                  monthlySalesPerformance.totalCasesPeriod === 0 &&
+                  monthlySalesPerformance.totalCasesYear > 0 && (
+                    <div className="rounded-xl bg-[#FFAA00]/10 border border-[#FFAA00]/25 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="text-[#FFCF90]">
+                        เดือน {THAI_MONTH_LIST[salesMonth - 1]?.full} {salesYear + 543} ยังไม่มีเคสที่บันทึก (แต่ปีนี้มีสะสม{' '}
+                        <span className="font-mono tabular-nums font-bold">
+                          {monthlySalesPerformance.totalCasesYear.toLocaleString('th-TH')}
+                        </span>{' '}
+                        เคส)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setSalesMonth('all')}
+                        className="text-[#FFB59D] hover:text-white font-semibold underline underline-offset-2 cursor-pointer"
+                      >
+                        ดูรวมทั้งปี {salesYear + 543}
+                      </button>
+                    </div>
+                  )}
+
+                {monthlySalesPerformance.rows.map((rep, idx) => (
                   <div
-                    key={rep.name}
+                    key={rep.key}
                     className="glass-tile group rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                   >
                     <div className="flex items-center gap-3.5 min-w-0">
                       <div
                         className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${
-                          idx === 0
+                          rep.starPerformer
                             ? 'bg-gradient-to-br from-[#FF7038] to-[#D94309] text-white shadow-[0_6px_18px_rgba(255,94,30,0.4)]'
                             : 'bg-[#262A34] text-[#DFE2EF] border border-white/[0.08]'
                         }`}
@@ -675,16 +1049,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           </span>
                           {rep.starPerformer && (
                             <span className="text-[11px] font-semibold text-[#FFCF90]">
-                              · อันดับ 1
+                              · สูงสุดประจำช่วงนี้
                             </span>
                           )}
                         </div>
                         <div className="text-xs text-[#B5BDCB] mt-0.5 flex flex-wrap items-center gap-x-2">
-                          <span className={idx === 0 ? 'text-[#FFCF90]' : 'text-[#B5BDCB]'}>
-                            {rep.team}
+                          <span className="text-[#FFB59D]">
+                            พนักงานฝ่ายขาย
+                            {rep.territory ? ` · ${rep.territory}` : ''}
                           </span>
-                          <span aria-hidden="true">·</span>
-                          <span className="font-mono tabular-nums">{rep.closedCases} เคส</span>
+                          {rep.revenue > 0 && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="font-mono tabular-nums text-[#DFE2EF]">
+                                ยอดรวม {formatCompactCurrency(rep.revenue)}
+                              </span>
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -693,15 +1074,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <div className="text-right">
                         <div
                           className={`apple-stat text-base font-bold ${
-                            idx === 0 ? 'text-[#FFCF90]' : 'text-[#F4F6FB]'
+                            rep.starPerformer ? 'text-[#FFCF90]' : 'text-[#F4F6FB]'
                           }`}
                         >
-                          {formatCurrency(rep.revenue)}
+                          {rep.closedCases.toLocaleString('th-TH')}{' '}
+                          <span className="text-xs font-normal text-[#B5BDCB]">เคส</span>
                         </div>
                         <div className="flex items-center justify-end gap-2 mt-1">
-                          <div className="w-24 h-1.5 bg-white/[0.08] rounded-full overflow-hidden">
+                          <span className="text-[10px] text-[#8E97AB] font-mono tabular-nums">
+                            ทั้งปี {rep.yearlyCases.toLocaleString('th-TH')} เคส
+                          </span>
+                          <div className="w-20 h-1.5 bg-white/[0.08] rounded-full overflow-hidden">
                             <div
-                              className="h-full rounded-full"
+                              className="h-full rounded-full transition-all"
                               style={{
                                 width: `${rep.sharePct}%`,
                                 backgroundColor:
@@ -722,11 +1107,110 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </div>
                 ))}
               </div>
+            ) : (
+              /* 12-Month Case Count Matrix Table (Salespeople Only) */
+              <div className="overflow-x-auto rounded-xl border border-white/[0.08] bg-[#0B0F18]/65">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-white/[0.08] text-[#B5BDCB]">
+                      <th className="sticky left-0 z-10 bg-[#121723] px-3.5 py-3 text-left font-semibold min-w-[170px] border-r border-white/[0.08]">
+                        พนักงานฝ่ายขาย
+                      </th>
+                      {THAI_MONTH_LIST.map((m) => (
+                        <th
+                          key={m.month}
+                          className={`px-2.5 py-3 text-right font-semibold whitespace-nowrap min-w-[70px] ${
+                            salesMonth === m.month ? 'text-[#FFCF90] bg-[#FF5E1E]/10' : ''
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSalesMonth(m.month);
+                              setSalesViewMode('monthly');
+                            }}
+                            className="hover:text-[#FFB59D] transition-colors cursor-pointer"
+                            title={`ดูจำนวนเคสเดือน ${m.full}`}
+                          >
+                            {m.short}
+                          </button>
+                        </th>
+                      ))}
+                      <th className="px-3.5 py-3 text-right font-semibold text-[#FFCF90] whitespace-nowrap min-w-[96px] border-l border-white/[0.08]">
+                        รวมปี {salesYear + 543}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/[0.06]">
+                    {monthlySalesPerformance.rows.map((rep) => (
+                      <tr key={rep.key} className="hover:bg-white/[0.03] transition-colors">
+                        <td className="sticky left-0 z-10 bg-[#121723] px-3.5 py-3 border-r border-white/[0.08]">
+                          <div className="font-semibold text-[#F4F6FB] truncate max-w-[160px]">
+                            {rep.name}
+                          </div>
+                          <div className="text-[10px] text-[#8E97AB] truncate max-w-[160px]">
+                            {rep.territory || 'พนักงานฝ่ายขาย'}
+                          </div>
+                        </td>
+                        {THAI_MONTH_LIST.map((m) => {
+                          const cell = rep.months[m.month];
+                          const hasVal = cell.cases > 0 || cell.revenue > 0;
+                          return (
+                            <td
+                              key={m.month}
+                              className={`px-2.5 py-3 text-right font-mono tabular-nums whitespace-nowrap ${
+                                salesMonth === m.month ? 'bg-[#FF5E1E]/[0.06]' : ''
+                              }`}
+                            >
+                              {hasVal ? (
+                                <div>
+                                  <div className="text-[#F4F6FB] font-semibold">
+                                    {cell.cases.toLocaleString('th-TH')} เคส
+                                  </div>
+                                  {cell.revenue > 0 && (
+                                    <div className="text-[10px] text-[#FFB59D]">
+                                      {formatCompactCurrency(cell.revenue)}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-[#4B5568]">—</span>
+                              )}
+                            </td>
+                          );
+                        })}
+                        <td className="px-3.5 py-3 text-right font-mono tabular-nums whitespace-nowrap border-l border-white/[0.08]">
+                          <div className="font-bold text-[#FFCF90]">
+                            {rep.yearlyCases.toLocaleString('th-TH')} เคส
+                          </div>
+                          <div className="text-[10px] text-[#B5BDCB]">
+                            {formatCompactCurrency(rep.yearlyRevenue)}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
 
-            <div className="mt-4 pt-3 border-t border-white/[0.06] flex items-center justify-between text-xs">
+            <div className="mt-4 pt-3 border-t border-white/[0.06] flex flex-wrap items-center justify-between gap-2 text-xs">
               <span className="text-[#8E97AB]">
-                แสดงอันดับสูงสุด {leaderboard.length} รายการจากข้อมูลจริง
+                ช่วงแสดงผล:{' '}
+                <span className="text-[#DFE2EF] font-medium">{selectedMonthLabel}</span> · รวม{' '}
+                <span className="font-mono tabular-nums font-semibold text-[#FFCF90]">
+                  {monthlySalesPerformance.totalCasesPeriod.toLocaleString('th-TH')} เคส
+                </span>{' '}
+                · ฝ่ายขาย {monthlySalesPerformance.rows.length} คน
+                {monthlySalesPerformance.totalRevenuePeriod > 0 && (
+                  <>
+                    {' '}
+                    ·{' '}
+                    <span className="font-mono tabular-nums text-[#FFB59D]">
+                      {formatCompactCurrency(monthlySalesPerformance.totalRevenuePeriod)}
+                    </span>
+                  </>
+                )}
               </span>
               <button
                 type="button"
@@ -734,13 +1218,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 className="text-[#FFB59D] hover:text-[#FFDBD0] font-semibold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
               >
                 <Plus className="w-3.5 h-3.5" />
-                บันทึกเคสใหม่
+                เพิ่มเคสใหม่
               </button>
             </div>
           </section>
 
           {/* 40% Column: Live Top Hospital Hotspots */}
-          <section className="lg:col-span-5 glass-panel rounded-2xl p-5 sm:p-6">
+          <section
+            className={`${
+              salesViewMode === 'matrix12' ? 'lg:col-span-12' : 'lg:col-span-5'
+            } glass-panel rounded-2xl p-5 sm:p-6`}
+          >
             <div className="flex items-start justify-between gap-3 mb-5">
               <div>
                 <div className="flex items-center gap-2">

@@ -121,13 +121,41 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
     let selectedTotal = 0;
     let newCount = 0;
     let dupCount = 0;
+    let withPriceCount = 0;
+    let withSterilizeCount = 0;
+    let withDeliveryCount = 0;
     for (let idx = 0; idx < parsedCases.length; idx++) {
       if (!selectedIndices.has(idx)) continue;
       selectedTotal += 1;
       if (existingMatches[idx]) dupCount += 1;
       else newCount += 1;
+      const item = parsedCases[idx];
+      if (item.price > 0) withPriceCount += 1;
+      if (
+        item.sterilizeOutDate ||
+        item.sterilizeReturnDate ||
+        item.qcReceiveDate ||
+        item.certificateNo
+      ) {
+        withSterilizeCount += 1;
+      }
+      if (
+        item.deliveryDate ||
+        item.deliveryChannel ||
+        item.deliveredBy ||
+        item.emsTrackingNo
+      ) {
+        withDeliveryCount += 1;
+      }
     }
-    return { selectedTotal, newCount, dupCount };
+    return {
+      selectedTotal,
+      newCount,
+      dupCount,
+      withPriceCount,
+      withSterilizeCount,
+      withDeliveryCount,
+    };
   }, [parsedCases, selectedIndices, existingMatches]);
 
   const filteredPreviewIndices = useMemo(() => {
@@ -192,8 +220,19 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
     setDetectedFormat(format);
     setSourceLabel(label);
     const allIdx = new Set<number>();
-    for (let i = 0; i < cases.length; i++) allIdx.add(i);
+    let matchedExisting = 0;
+    for (let i = 0; i < cases.length; i++) {
+      allIdx.add(i);
+      if (matchCaseInLookup(cases[i], existingLookup)) {
+        matchedExisting += 1;
+      }
+    }
     setSelectedIndices(allIdx);
+    // When re-uploading a workbook whose rows already exist in Firestore, default to non-destructive "อัปเดตเคสเดิม"
+    // so price, sterilization, and delivery data fill in cleanly without skipping everything.
+    if (matchedExisting > 0 && matchedExisting === cases.length) {
+      setDuplicateMode('update');
+    }
   };
 
   const handleSelectSheet = (key: string, sheets: ParsedSheetResult[], fileName: string) => {
@@ -698,7 +737,7 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                       </>
                     )}
                   </div>
-                  <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#C8B6AE] font-mono tabular-nums">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[#C8B6AE] font-mono tabular-nums">
                     <span>เลือกนำเข้า {summaryCounts.selectedTotal.toLocaleString('th-TH')} รายการ</span>
                     <span className="text-emerald-300">
                       เคสใหม่ {summaryCounts.newCount.toLocaleString('th-TH')}
@@ -708,6 +747,16 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                         ซ้ำกับในระบบ {summaryCounts.dupCount.toLocaleString('th-TH')}
                       </span>
                     )}
+                    <span className="text-white/25">|</span>
+                    <span className="text-[#FFCF90]">
+                      พบราคา {summaryCounts.withPriceCount.toLocaleString('th-TH')}
+                    </span>
+                    <span className="text-sky-300">
+                      ฆ่าเชื้อ {summaryCounts.withSterilizeCount.toLocaleString('th-TH')}
+                    </span>
+                    <span className="text-emerald-300">
+                      จัดส่ง {summaryCounts.withDeliveryCount.toLocaleString('th-TH')}
+                    </span>
                   </div>
                 </div>
 
@@ -845,6 +894,9 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                           สินค้า / วันรับ-ผ่าตัด
                         </th>
                         <th className="py-2.5 px-2.5 font-semibold whitespace-nowrap">
+                          ฆ่าเชื้อ / จัดส่ง
+                        </th>
+                        <th className="py-2.5 px-2.5 font-semibold whitespace-nowrap">
                           สถานะสี
                         </th>
                         <th className="py-2.5 px-2.5 font-semibold text-right whitespace-nowrap">
@@ -928,6 +980,18 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
                                 {item.receivedDate && item.surgeryDate ? ' · ' : ''}
                                 {item.surgeryDate ? `ผ่าตัด ${item.surgeryDate}` : ''}
                                 {!item.receivedDate && !item.surgeryDate ? '-' : ''}
+                              </div>
+                            </td>
+                            <td className="py-2.5 px-2.5 max-w-[180px]">
+                              <div className="text-[11px] text-sky-200/95 truncate font-mono">
+                                {item.sterilizeOutDate || item.sterilizeReturnDate || item.certificateNo
+                                  ? `ฆ่าเชื้อ: ${item.sterilizeOutDate || item.sterilizeReturnDate || '-'}${item.certificateNo ? ` · ${item.certificateNo}` : ''}`
+                                  : <span className="text-white/35">ฆ่าเชื้อ: -</span>}
+                              </div>
+                              <div className="text-[10px] text-emerald-300/90 truncate">
+                                {item.deliveryDate || item.deliveryChannel || item.deliveredBy || item.emsTrackingNo
+                                  ? `ส่ง: ${item.deliveryDate || '-'}${item.deliveryChannel ? ` (${item.deliveryChannel})` : ''}${item.emsTrackingNo ? ` · ${item.emsTrackingNo}` : ''}`
+                                  : <span className="text-white/35">จัดส่ง: -</span>}
                               </div>
                             </td>
                             <td className="py-2.5 px-2.5 whitespace-nowrap">

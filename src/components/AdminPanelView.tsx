@@ -1,5 +1,18 @@
-import React, { useState } from 'react';
-import { AlertTriangle, Check, Loader2, Lock, Shield, Trash2, UserCheck, UserX } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  Clock,
+  Loader2,
+  Lock,
+  Shield,
+  Trash2,
+  UserCheck,
+  UserPlus,
+  UserX,
+  XCircle,
+} from 'lucide-react';
 import {
   formatTimestamp,
   REGIONS,
@@ -14,7 +27,9 @@ import {
 } from '../types';
 import { getFriendlyFirestoreError } from '../firebase';
 import {
+  approveUserRegistration,
   clearAllWorkspaceRecords,
+  rejectUserRegistration,
   updateUserRoleAndStatus,
 } from '../services/crmService';
 
@@ -29,7 +44,15 @@ interface AdminPanelViewProps {
   onNotifyToast: (msg: string) => void;
 }
 
-const ROLES_LIST: UserRole[] = ['admin', 'executive', 'manager', 'office_admin', 'sales'];
+const ROLES_LIST: UserRole[] = [
+  'admin',
+  'executive',
+  'manager',
+  'sales',
+  'office_admin',
+  'employee',
+  'accounting',
+];
 
 export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   currentUser,
@@ -43,14 +66,65 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
 }) => {
   const isAdmin = currentUser.role === 'admin';
   const [savingUid, setSavingUid] = useState<string | null>(null);
+  const [approvingUid, setApprovingUid] = useState<string | null>(null);
+  const [rejectingUid, setRejectingUid] = useState<string | null>(null);
+  const [pendingRoleOverrides, setPendingRoleOverrides] = useState<Record<string, UserRole>>({});
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resettingWorkspace, setResettingWorkspace] = useState(false);
   const [drafts, setDrafts] = useState<
     Record<string, { role: UserRole; department: string; territory: string; active: boolean }>
   >({});
 
+  const pendingUsers = useMemo(
+    () =>
+      users
+        .filter((u) => u.approvalStatus === 'pending')
+        .sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0)),
+    [users]
+  );
+
+  const directoryUsers = useMemo(
+    () => users.filter((u) => u.approvalStatus !== 'pending'),
+    [users]
+  );
+
   const totalStoredRecords =
     hospitals.length + deals.length + officeCases.length + notifications.length;
+
+  const handleApprovePending = async (target: UserProfile) => {
+    if (!isAdmin || approvingUid) return;
+    const assignedRole =
+      pendingRoleOverrides[target.uid] || target.requestedRole || target.role || 'employee';
+    setApprovingUid(target.uid);
+    try {
+      await approveUserRegistration(target, assignedRole, currentUser);
+      setPendingRoleOverrides((prev) => {
+        const next = { ...prev };
+        delete next[target.uid];
+        return next;
+      });
+      onNotifyToast(
+        `อนุมัติ "${target.displayName}" เข้าใช้งานในตำแหน่ง ${ROLE_META[assignedRole].label} เรียบร้อยแล้ว`
+      );
+    } catch (err) {
+      onNotifyToast(getFriendlyFirestoreError(err, 'ไม่สามารถอนุมัติผู้ใช้งานได้'));
+    } finally {
+      setApprovingUid(null);
+    }
+  };
+
+  const handleRejectPending = async (target: UserProfile) => {
+    if (!isAdmin || rejectingUid) return;
+    setRejectingUid(target.uid);
+    try {
+      await rejectUserRegistration(target, currentUser);
+      onNotifyToast(`ปฏิเสธคำขอลงทะเบียนของ "${target.displayName}" แล้ว`);
+    } catch (err) {
+      onNotifyToast(getFriendlyFirestoreError(err, 'ไม่สามารถปฏิเสธคำขอได้'));
+    } finally {
+      setRejectingUid(null);
+    }
+  };
 
   const handleConfirmResetWorkspace = async () => {
     if (!isAdmin || resettingWorkspace) return;
@@ -68,7 +142,9 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         `ล้างข้อมูลเรียบร้อยแล้ว (ดีล ${res.dealsDeleted} · รพ. ${res.hospitalsDeleted} · เคสออฟฟิศ ${res.officeCasesDeleted} · แจ้งเตือน ${res.notificationsDeleted}) พร้อมเริ่มใช้งานจริง`
       );
     } catch (err) {
-      onNotifyToast(getFriendlyFirestoreError(err, 'ไม่สามารถล้างข้อมูลบางรายการได้ กรุณาลองใหม่'));
+      onNotifyToast(
+        getFriendlyFirestoreError(err, 'ไม่สามารถล้างข้อมูลบางรายการได้ กรุณาลองใหม่')
+      );
     } finally {
       setResettingWorkspace(false);
     }
@@ -97,7 +173,14 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     const draft = getDraft(target);
     setSavingUid(target.uid);
     try {
-      await updateUserRoleAndStatus(target, draft, currentUser);
+      await updateUserRoleAndStatus(
+        target,
+        {
+          ...draft,
+          approvalStatus: draft.active ? 'approved' : target.approvalStatus || 'approved',
+        },
+        currentUser
+      );
       setDrafts((prev) => {
         const next = { ...prev };
         delete next[target.uid];
@@ -113,52 +196,44 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
 
   const permissionMatrix = [
     {
-      capability: 'กรอกและอัปเดตทะเบียนเคสออฟฟิศ (CTEC Personalized Implant)',
-      admin: 'เต็มรูปแบบ (รวมลบ/ปลดล็อก)',
-      executive: 'อ่านและส่งออก Excel',
-      manager: 'เพิ่มและอัปเดตเคส',
-      office_admin: 'กรอก/อัปเดต/นำเข้า-ส่งออก Excel',
-      sales: 'ไม่อนุญาต (ป้องกันข้อมูลคนไข้)',
-    },
-    {
-      capability: 'ดูแดชบอร์ดรวมผู้บริหารและกราฟวิเคราะห์ทุกทีม',
-      admin: 'เข้าถึงเต็มรูปแบบ',
-      executive: 'เข้าถึงเต็มรูปแบบ',
-      manager: 'เข้าถึงเต็มรูปแบบ',
-      office_admin: 'ดูภาพรวมและกราฟ',
-      sales: 'เฉพาะข้อมูลของตนเอง',
-    },
-    {
-      capability: 'แผนที่ติดตามสถานะและความหนาแน่นโรงพยาบาล',
-      admin: 'ดูและจัดการทั้งหมด',
-      executive: 'ดูภาพรวมทั้งหมด',
-      manager: 'ดูและจัดการทั้งหมด',
-      office_admin: 'ดูและเพิ่มโรงพยาบาล',
-      sales: 'ดูและเพิ่มโรงพยาบาล',
-    },
-    {
-      capability: 'แก้ไขหรือปลดล็อกดีลที่ปิดสำเร็จ/ยกเลิกแล้ว',
-      admin: 'อนุญาต (Override)',
-      executive: 'ไม่อนุญาต',
-      manager: 'ไม่อนุญาต (ล็อกสถานะ)',
+      capability: 'อนุมัติผู้ลงทะเบียนใหม่และจัดการสิทธิ์ (RBAC)',
+      admin: 'เต็มรูปแบบ',
+      executive: 'ดูอย่างเดียว',
+      manager: 'ดูอย่างเดียว',
       office_admin: 'ไม่อนุญาต',
-      sales: 'ไม่อนุญาต (ล็อกสถานะ)',
-    },
-    {
-      capability: 'ส่งออกรายงาน PDF / Excel และประกาศสรุปยอดรายวัน',
-      admin: 'อนุญาต',
-      executive: 'อนุญาต',
-      manager: 'อนุญาต',
-      office_admin: 'ส่งออกทะเบียนเคสออฟฟิศ',
-      sales: 'ส่งออกเฉพาะข้อมูลตน',
-    },
-    {
-      capability: 'จัดการสิทธิ์ผู้ใช้ (RBAC) และตรวจสอบ Audit Log',
-      admin: 'จัดการเต็มรูปแบบ',
-      executive: 'อ่านอย่างเดียว',
-      manager: 'อ่านประวัติได้',
-      office_admin: 'ไม่อนุญาต',
+      accounting: 'ไม่อนุญาต',
       sales: 'ไม่อนุญาต',
+      employee: 'ไม่อนุญาต',
+    },
+    {
+      capability: 'ระบบรับเคสใหม่และทะเบียนเคสกลาง (ฝ่ายขาย & แอดมิน)',
+      admin: 'เต็มรูปแบบ',
+      executive: 'อ่านและส่งออก',
+      manager: 'รับเคส/อัปเดต',
+      office_admin: 'รับเคส/นำเข้า Excel',
+      accounting: 'อ่านและตรวจสอบยอด',
+      sales: 'รับเคสใหม่/อัปเดต',
+      employee: 'ไม่อนุญาต',
+    },
+    {
+      capability: 'แดชบอร์ดรวม & ตารางจำนวนเคสประจำเดือนฝ่ายขาย',
+      admin: 'เข้าถึงทั้งหมด',
+      executive: 'เข้าถึงทั้งหมด',
+      manager: 'เข้าถึงทั้งหมด',
+      office_admin: 'เข้าถึงทั้งหมด',
+      accounting: 'เข้าถึงทั้งหมด',
+      sales: 'เข้าถึงและแสดงชื่อตน',
+      employee: 'ภาพรวมบริษัท',
+    },
+    {
+      capability: 'แผนที่ความหนาแน่นโรงพยาบาล 77 จังหวัด',
+      admin: 'ดูทั้งหมด',
+      executive: 'ดูทั้งหมด',
+      manager: 'ดูทั้งหมด',
+      office_admin: 'ดูทั้งหมด',
+      accounting: 'ดูทั้งหมด',
+      sales: 'ดูทั้งหมด',
+      employee: 'ดูทั้งหมด',
     },
   ];
 
@@ -168,39 +243,151 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-white">
-            ระบบแอดมินหลังบ้านและการจัดการสิทธิ์ผู้ใช้งาน
+            ระบบแอดมินหลังบ้าน อนุมัติผู้ลงทะเบียน และจัดการสิทธิ์
           </h1>
           <p className="text-sm text-[#e3beb3]/75 mt-1">
-            กำหนดบทบาทการทำงาน ควบคุมเขตพื้นที่รับผิดชอบ และตรวจสอบบันทึกความปลอดภัย (RBAC &amp; Audit Log)
+            ตรวจสอบคำขอลงทะเบียนผู้ใช้งานใหม่ กำหนดตำแหน่งงาน และติดตามบันทึกความปลอดภัย (RBAC &amp; Audit Log)
           </p>
         </div>
         {!isAdmin && (
           <div className="text-xs text-[#ffcf90] bg-[#ffaa00]/12 border border-[#ffaa00]/30 px-3.5 py-2 rounded-xl flex items-center gap-2">
             <Lock className="w-3.5 h-3.5 shrink-0" />
-            <span>โหมดอ่านอย่างเดียว — เฉพาะผู้ดูแลระบบสูงสุดจึงจะแก้ไขสิทธิ์ได้</span>
+            <span>โหมดอ่านอย่างเดียว — เฉพาะผู้ดูแลระบบสูงสุดจึงจะอนุมัติและแก้ไขสิทธิ์ได้</span>
           </div>
         )}
       </div>
+
+      {/* Pending User Registrations Approval Queue */}
+      <section className="apple-glass rounded-2xl overflow-hidden border border-[#FFAA00]/25">
+        <div className="px-5 py-4 border-b border-white/[0.08] flex flex-wrap items-center justify-between gap-3 bg-[#FF5E1E]/[0.06]">
+          <div className="flex items-center gap-2.5">
+            <UserPlus className="w-5 h-5 text-[#FFCF90] shrink-0" />
+            <div>
+              <h2 className="text-base font-semibold text-white">
+                คำขอลงทะเบียนรอการอนุมัติ ({pendingUsers.length} รายการ)
+              </h2>
+              <p className="text-xs text-[#e3beb3]/75 mt-0.5">
+                ผู้ลงทะเบียนใหม่จะถูกล็อกสิทธิ์ไม่ให้เข้าถึงข้อมูลใดๆ จนกว่าผู้ดูแลระบบจะกดอนุมัติ
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {pendingUsers.length === 0 ? (
+          <div className="px-5 py-7 text-center text-xs text-[#B5BDCB] flex flex-col items-center gap-1.5">
+            <CheckCircle2 className="w-6 h-6 text-emerald-400/80" />
+            <span className="font-medium text-[#F4F6FB]">ไม่มีคำขอลงทะเบียนค้างรออนุมัติ</span>
+            <span className="text-[#8E97AB]">
+              เมื่อมีพนักงานหรือผู้บริหารล็อกอินลงทะเบียนใหม่ รายการจะปรากฏที่นี่แบบเรียลไทม์
+            </span>
+          </div>
+        ) : (
+          <div className="divide-y divide-white/[0.06]">
+            {pendingUsers.map((u) => {
+              const reqRole = u.requestedRole || 'employee';
+              const chosenRole = pendingRoleOverrides[u.uid] || reqRole;
+              const busy = approvingUid === u.uid || rejectingUid === u.uid;
+
+              return (
+                <div
+                  key={u.uid}
+                  className="px-5 py-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 hover:bg-white/[0.02]"
+                >
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-bold text-white">{u.displayName}</span>
+                      <span className="text-xs font-semibold text-[#FFCF90] inline-flex items-center gap-1">
+                        <Clock className="w-3.5 h-3.5" />
+                        ขอสมัครตำแหน่ง: {ROLE_META[reqRole]?.label || reqRole}
+                      </span>
+                    </div>
+                    <div className="text-xs text-[#B5BDCB] flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                      <span>แผนก: {u.department || '-'}</span>
+                      <span>·</span>
+                      <span>พื้นที่: {u.territory || 'ทั่วประเทศ'}</span>
+                      <span>·</span>
+                      <span className="font-mono tabular-nums text-[#8E97AB]">
+                        ส่งคำขอเมื่อ {formatTimestamp(u.createdAt)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {isAdmin && (
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <select
+                        aria-label={`กำหนดตำแหน่งอนุมัติสำหรับ ${u.displayName}`}
+                        value={chosenRole}
+                        disabled={busy}
+                        onChange={(e) =>
+                          setPendingRoleOverrides((prev) => ({
+                            ...prev,
+                            [u.uid]: e.target.value as UserRole,
+                          }))
+                        }
+                        className="h-9 px-2.5 text-xs rounded-xl glass-input"
+                      >
+                        {ROLES_LIST.map((r) => (
+                          <option key={r} value={r}>
+                            {ROLE_META[r].label}
+                          </option>
+                        ))}
+                      </select>
+
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void handleApprovePending(u)}
+                        className="btn-luxury-orange min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-55 whitespace-nowrap"
+                      >
+                        {approvingUid === u.uid ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                        )}
+                        อนุมัติเข้าใช้งาน
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void handleRejectPending(u)}
+                        className="min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-semibold text-rose-200 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/30 inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-55 whitespace-nowrap"
+                      >
+                        {rejectingUid === u.uid ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <XCircle className="w-3.5 h-3.5" />
+                        )}
+                        ไม่อนุมัติ
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       {/* User Directory & RBAC Controls */}
       <section className="apple-glass rounded-2xl overflow-hidden">
         <div className="px-5 py-4 border-b border-white/[0.08] flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-base font-semibold text-white">
-              รายชื่อผู้ใช้งานและกำหนดบทบาท ({users.length} บัญชี)
+              รายชื่อผู้ใช้งานในระบบและกำหนดตำแหน่ง ({directoryUsers.length} บัญชี)
             </h2>
             <p className="text-xs text-[#e3beb3]/70 mt-0.5">
-              ข้อมูลส่วนบุคคล (อีเมล/เบอร์โทร) ถูกแยกเก็บในคอลเลกชันส่วนตัวตามมาตรฐานความปลอดภัย
+              พนักงานตำแหน่ง &quot;พนักงานฝ่ายขาย&quot; ที่เปิดใช้งานจะถูกนำชื่อไปแสดงในตารางผลงานการขายแต่ละเดือนอัตโนมัติ
             </p>
           </div>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[780px]">
+          <table className="w-full text-left border-collapse min-w-[820px]">
             <thead>
               <tr className="bg-white/[0.03] border-b border-white/[0.08] text-xs font-semibold text-[#e3beb3]">
-                <th className="py-3 px-4">ชื่อผู้ใช้งาน</th>
-                <th className="py-3 px-4">บทบาท (Role)</th>
+                <th className="py-3 px-4">ชื่อ-สกุล</th>
+                <th className="py-3 px-4">ตำแหน่ง (Role)</th>
                 <th className="py-3 px-4">แผนก</th>
                 <th className="py-3 px-4">เขตพื้นที่ดูแล</th>
                 <th className="py-3 px-4">สถานะบัญชี</th>
@@ -208,7 +395,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-white/[0.06] text-sm">
-              {users.map((u) => {
+              {directoryUsers.map((u) => {
                 const draft = getDraft(u);
                 const isDirty =
                   draft.role !== u.role ||
@@ -216,6 +403,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                   draft.territory !== u.territory ||
                   draft.active !== u.active;
                 const isSelf = u.uid === currentUser.uid;
+                const isRejected = u.approvalStatus === 'rejected';
 
                 return (
                   <tr key={u.uid} className="hover:bg-white/[0.03] transition-colors">
@@ -230,6 +418,9 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                       </div>
                       <div className="text-xs text-[#aa897f] font-mono">
                         UID: {u.uid.slice(0, 10)}...
+                        {isRejected && (
+                          <span className="ml-2 font-sans text-rose-300">· เคยถูกปฏิเสธคำขอ</span>
+                        )}
                       </div>
                     </td>
                     <td className="py-3 px-4">
@@ -248,8 +439,12 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                           ))}
                         </select>
                       ) : (
-                        <span className={`text-xs font-semibold ${ROLE_META[u.role].textClass}`}>
-                          {ROLE_META[u.role].label}
+                        <span
+                          className={`text-xs font-semibold ${
+                            ROLE_META[u.role]?.textClass || 'text-slate-300'
+                          }`}
+                        >
+                          {ROLE_META[u.role]?.label || u.role}
                         </span>
                       )}
                     </td>
@@ -296,12 +491,12 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                           {draft.active ? (
                             <>
                               <UserCheck className="w-4 h-4" />
-                              เปิดใช้งาน
+                              อนุมัติ / เปิดใช้งาน
                             </>
                           ) : (
                             <>
                               <UserX className="w-4 h-4" />
-                              ระงับสิทธิ์
+                              {isRejected ? 'ไม่อนุมัติ' : 'ระงับสิทธิ์'}
                             </>
                           )}
                         </button>
@@ -311,7 +506,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                             u.active ? 'text-emerald-400' : 'text-rose-400'
                           }`}
                         >
-                          {u.active ? 'เปิดใช้งาน' : 'ระงับสิทธิ์'}
+                          {u.active ? 'เปิดใช้งาน' : isRejected ? 'ไม่อนุมัติ' : 'ระงับสิทธิ์'}
                         </span>
                       )}
                     </td>
@@ -320,7 +515,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                         <button
                           type="button"
                           disabled={!isDirty || savingUid === u.uid}
-                          onClick={() => handleSaveUser(u)}
+                          onClick={() => void handleSaveUser(u)}
                           className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition-all whitespace-nowrap ${
                             isDirty
                               ? 'orange-cta cursor-pointer'
@@ -345,30 +540,34 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         <div className="px-5 py-4 border-b border-white/[0.08] flex items-center gap-2">
           <Shield className="w-4 h-4 text-[#ffb59d]" />
           <h2 className="text-base font-semibold text-white">
-            ตารางกำหนดสิทธิ์การเข้าถึงตามบทบาท (RBAC Policy Matrix)
+            ตารางกำหนดสิทธิ์การเข้าถึงตามตำแหน่ง (RBAC Policy Matrix)
           </h2>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[680px]">
+          <table className="w-full text-left border-collapse min-w-[820px]">
             <thead>
               <tr className="bg-white/[0.03] border-b border-white/[0.08] text-xs font-semibold text-[#e3beb3]">
                 <th className="py-3 px-4">ขอบเขตสิทธิ์การทำงาน</th>
-                <th className="py-3 px-4">ผู้ดูแลระบบสูงสุด</th>
-                <th className="py-3 px-4">ผู้บริหาร</th>
-                <th className="py-3 px-4">ผู้จัดการฝ่ายขาย</th>
-                <th className="py-3 px-4">แอดมินออฟฟิศ</th>
-                <th className="py-3 px-4">ผู้แทนขาย</th>
+                <th className="py-3 px-3">ผู้ดูแลระบบ</th>
+                <th className="py-3 px-3">ผู้บริหาร</th>
+                <th className="py-3 px-3">ผู้จัดการ</th>
+                <th className="py-3 px-3">ฝ่ายแอดมิน</th>
+                <th className="py-3 px-3">ฝ่ายบัญชี</th>
+                <th className="py-3 px-3">พนักงานฝ่ายขาย</th>
+                <th className="py-3 px-3">พนักงานบริษัท</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/[0.06] text-xs">
               {permissionMatrix.map((row) => (
                 <tr key={row.capability}>
                   <td className="py-3 px-4 font-medium text-white">{row.capability}</td>
-                  <td className="py-3 px-4 text-[#ffb59d] font-medium">{row.admin}</td>
-                  <td className="py-3 px-4 text-[#ffcf90]">{row.executive}</td>
-                  <td className="py-3 px-4 text-[#dfe2ef]">{row.manager}</td>
-                  <td className="py-3 px-4 text-sky-300 font-medium">{row.office_admin}</td>
-                  <td className="py-3 px-4 text-[#aa897f]">{row.sales}</td>
+                  <td className="py-3 px-3 text-[#ffb59d] font-medium">{row.admin}</td>
+                  <td className="py-3 px-3 text-[#ffcf90]">{row.executive}</td>
+                  <td className="py-3 px-3 text-[#EEC058]">{row.manager}</td>
+                  <td className="py-3 px-3 text-sky-300 font-medium">{row.office_admin}</td>
+                  <td className="py-3 px-3 text-violet-300 font-medium">{row.accounting}</td>
+                  <td className="py-3 px-3 text-emerald-300">{row.sales}</td>
+                  <td className="py-3 px-3 text-slate-300">{row.employee}</td>
                 </tr>
               ))}
             </tbody>
@@ -400,7 +599,9 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                 <div className="space-y-0.5 min-w-0">
                   <div className="flex flex-wrap items-center gap-x-2 text-white font-medium">
                     <span>{log.action}</span>
-                    <span className="text-[#aa897f]" aria-hidden="true">·</span>
+                    <span className="text-[#aa897f]" aria-hidden="true">
+                      ·
+                    </span>
                     <span className="text-[#ffcf90] truncate">{log.targetLabel}</span>
                   </div>
                   <div className="text-[#e3beb3]/75">{log.details}</div>
@@ -429,10 +630,18 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
               หากเคยนำเข้าข้อมูลเดโม่หรือข้อมูลทดสอบเก็บไว้ในระบบ สามารถกดล้างข้อมูลทั้งหมดในฐานข้อมูลเพื่อเริ่มใช้งานจริงจากศูนย์ได้ (บัญชีผู้ใช้และสิทธิ์ RBAC จะไม่ถูกลบ)
             </p>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1 text-xs font-mono tabular-nums text-[#C8B6AE]">
-              <span>โรงพยาบาลใน CRM: <strong className="text-white">{hospitals.length}</strong></span>
-              <span>ดีลการขาย: <strong className="text-white">{deals.length}</strong></span>
-              <span>เคสออฟฟิศ: <strong className="text-white">{officeCases.length}</strong></span>
-              <span>แจ้งเตือน: <strong className="text-white">{notifications.length}</strong></span>
+              <span>
+                โรงพยาบาลคู่ค้า: <strong className="text-white">{hospitals.length}</strong>
+              </span>
+              <span>
+                ดีลการขาย: <strong className="text-white">{deals.length}</strong>
+              </span>
+              <span>
+                เคสออฟฟิศ: <strong className="text-white">{officeCases.length}</strong>
+              </span>
+              <span>
+                แจ้งเตือน: <strong className="text-white">{notifications.length}</strong>
+              </span>
             </div>
           </div>
 
@@ -463,7 +672,9 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                   ยืนยันล้างข้อมูลทั้งหมดเพื่อเริ่มใช้งานจริง?
                 </h3>
                 <p className="text-xs text-[#e3beb3]/80 leading-relaxed">
-                  ระบบจะลบข้อมูลในฐานข้อมูลทั้งหมด ได้แก่ โรงพยาบาล {hospitals.length} แห่ง, ดีล {deals.length} รายการ, เคสออฟฟิศ {officeCases.length} รายการ และแจ้งเตือน {notifications.length} รายการ โดยไม่สามารถกู้คืนได้ (บัญชีผู้ใช้จะคงอยู่ครบ)
+                  ระบบจะลบข้อมูลในฐานข้อมูลทั้งหมด ได้แก่ โรงพยาบาล {hospitals.length} แห่ง, ดีล{' '}
+                  {deals.length} รายการ, เคสออฟฟิศ {officeCases.length} รายการ และแจ้งเตือน{' '}
+                  {notifications.length} รายการ โดยไม่สามารถกู้คืนได้ (บัญชีผู้ใช้จะคงอยู่ครบ)
                 </p>
               </div>
             </div>
