@@ -429,7 +429,7 @@
         "hospitalCategory": { "type": "number" },
         "productionPlanNo": { "type": "string", "maxLength": 60 },
         "barcode": { "type": "string", "maxLength": 64 },
-        "workflowStatus": { "type": "string", "enum": ["in_progress", "sterilizing", "delivered"] },
+        "workflowStatus": { "type": "string", "enum": ["in_progress", "sterilizing", "delivered", "cancelled"] },
         "paymentChannels": { "type": "array" },
         "price": { "type": "number" },
         "paymentDetails": { "type": "string", "maxLength": 200 },

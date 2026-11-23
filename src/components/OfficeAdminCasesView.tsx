@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Ban,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -12,6 +13,7 @@ import {
   Lock,
   Package,
   Plus,
+  RotateCcw,
   Search,
   Trash2,
   Truck,
@@ -26,10 +28,12 @@ import {
 } from '../data/officeCaseReferenceData';
 import { ImportOfficeCasesModal } from './ImportOfficeCasesModal';
 import {
+  cancelOfficeCase,
   createOfficeCase,
   deleteOfficeCase,
   officeCaseToInput,
   quickUpdateOfficeCaseStatus,
+  restoreOfficeCase,
   updateOfficeCase,
   updateOfficeCaseStage,
 } from '../services/officeCaseService';
@@ -95,6 +99,13 @@ const DELIVERY_CHANNELS = [
   'แมสเซ็นเจอร์',
   'ผู้แทนขายนำส่ง',
   'รับที่ออฟฟิศ',
+];
+
+const CANCEL_REASON_PRESETS = [
+  'คนไข้เลื่อน / ยกเลิกผ่าตัด',
+  'แพทย์เปลี่ยนแผนการรักษา',
+  'โรงพยาบาลยกเลิกออเดอร์',
+  'คีย์ข้อมูลซ้ำในระบบ',
 ];
 
 function getTodayThaiDate(): string {
@@ -245,6 +256,9 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
   const [showImportModal, setShowImportModal] = useState(false);
   const [viewingCase, setViewingCase] = useState<OfficeCase | null>(null);
   const [updatingCaseId, setUpdatingCaseId] = useState<string | null>(null);
+  const [pendingCancelCase, setPendingCancelCase] = useState<OfficeCase | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancellingCase, setCancellingCase] = useState(false);
   const [pendingDeleteCase, setPendingDeleteCase] = useState<OfficeCase | null>(null);
   const [deletingCase, setDeletingCase] = useState(false);
 
@@ -271,14 +285,19 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
   const isEditingDeliveredLocked =
     Boolean(editingCase && editingCase.workflowStatus === 'delivered' && !isAdmin);
 
-  // Compute summary stats
+  // Compute summary stats (cancelled cases are tracked separately and excluded from active totals/value)
   const stats = useMemo(() => {
     let inProgress = 0;
     let sterilizing = 0;
     let delivered = 0;
+    let cancelled = 0;
     let totalValue = 0;
 
     officeCases.forEach((c) => {
+      if (c.workflowStatus === 'cancelled') {
+        cancelled += 1;
+        return;
+      }
       if (c.workflowStatus === 'in_progress') inProgress += 1;
       else if (c.workflowStatus === 'sterilizing') sterilizing += 1;
       else delivered += 1;
@@ -287,9 +306,11 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
 
     return {
       total: officeCases.length,
+      activeTotal: officeCases.length - cancelled,
       inProgress,
       sterilizing,
       delivered,
+      cancelled,
       totalValue,
     };
   }, [officeCases]);
@@ -522,10 +543,50 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
     }
   };
 
+  const openCancelModal = (item: OfficeCase) => {
+    setCancelReason('');
+    setPendingCancelCase(item);
+  };
+
+  const handleConfirmCancelCase = async () => {
+    if (!pendingCancelCase || cancellingCase) return;
+    setCancellingCase(true);
+    try {
+      const target = pendingCancelCase;
+      await cancelOfficeCase(target, cancelReason, currentUser);
+      setPendingCancelCase(null);
+      setCancelReason('');
+      if (viewingCase?.id === target.id) setViewingCase(null);
+      onNotifyToast(`ยกเลิกเคส ${getDisplayJobTitle(target)} เรียบร้อยแล้ว`);
+    } catch (err) {
+      onNotifyToast(getFriendlyFirestoreError(err, 'ไม่สามารถยกเลิกเคสนี้ได้ กรุณาลองใหม่'));
+    } finally {
+      setCancellingCase(false);
+    }
+  };
+
+  const handleRestoreCase = async (item: OfficeCase) => {
+    if (updatingCaseId === item.id) return;
+    setUpdatingCaseId(item.id);
+    try {
+      await restoreOfficeCase(item, currentUser);
+      if (viewingCase?.id === item.id) setViewingCase(null);
+      onNotifyToast(`กู้คืนเคส ${getDisplayJobTitle(item)} กลับเข้าสู่สถานะใช้งานแล้ว`);
+    } catch (err) {
+      onNotifyToast(getFriendlyFirestoreError(err, 'ไม่สามารถกู้คืนเคสนี้ได้'));
+    } finally {
+      setUpdatingCaseId(null);
+    }
+  };
+
   const handleInlineStatusChange = async (
     item: OfficeCase,
     nextStatus: OfficeCaseWorkflowStatus
   ) => {
+    if (nextStatus === 'cancelled') {
+      openCancelModal(item);
+      return;
+    }
     if (updatingCaseId === item.id) return;
     setUpdatingCaseId(item.id);
     try {
@@ -711,16 +772,16 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
         </div>
       )}
 
-      {/* KPI Summary Cards (4 Glass Cards matching Color Legend) */}
-      <section className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+      {/* KPI Summary Cards (5 Glass Cards matching Color Legend including Cancelled) */}
+      <section className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3.5">
         <div className="glass-panel rounded-2xl p-4 flex flex-col justify-between">
           <div className="flex items-center justify-between text-xs text-[#C8B6AE]">
-            <span>เคสทั้งหมดในทะเบียน</span>
+            <span>เคสใช้งานในทะเบียน</span>
             <ClipboardList className="w-4 h-4 text-[#FFB59D]" />
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
             <span className="apple-stat text-2xl sm:text-3xl font-bold text-white">
-              {stats.total.toLocaleString('th-TH')}
+              {stats.activeTotal.toLocaleString('th-TH')}
             </span>
             <span className="text-xs text-[#8E97AB]">เคส</span>
           </div>
@@ -800,6 +861,30 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
             จัดส่ง รพ./เคอรี่/EMS เรียบร้อยแล้ว
           </div>
         </button>
+
+        <button
+          type="button"
+          onClick={() =>
+            setStatusFilter(statusFilter === 'cancelled' ? 'all' : 'cancelled')
+          }
+          className={`text-left glass-panel rounded-2xl p-4 border-l-4 border-l-rose-500 transition-all cursor-pointer col-span-2 md:col-span-1 ${
+            statusFilter === 'cancelled' ? 'ring-1 ring-rose-400/70' : ''
+          }`}
+        >
+          <div className="flex items-center justify-between text-xs text-rose-300">
+            <span className="font-semibold">สีแดง · ยกเลิกเคส</span>
+            <Ban className="w-4 h-4 text-rose-400" />
+          </div>
+          <div className="mt-2 flex items-baseline gap-1.5">
+            <span className="apple-stat text-2xl sm:text-3xl font-bold text-rose-300">
+              {stats.cancelled}
+            </span>
+            <span className="text-xs text-[#B5BDCB]">เคส</span>
+          </div>
+          <div className="mt-2 pt-2 border-t border-white/[0.06] text-[11px] text-[#B5BDCB]">
+            ไม่นับรวมยอดเคส · กู้คืนได้ภายหลัง
+          </div>
+        </button>
       </section>
 
       {/* Filter Bar & Status Color Legend */}
@@ -811,6 +896,7 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
               { id: 'in_progress', label: `สีขาว: ระหว่างทำ (${stats.inProgress})`, dot: '#F8FAFC' },
               { id: 'sterilizing', label: `สีน้ำเงิน: ฆ่าเชื้อ (${stats.sterilizing})`, dot: '#38BDF8' },
               { id: 'delivered', label: `สีเขียว: จัดส่งแล้ว (${stats.delivered})`, dot: '#34D399' },
+              { id: 'cancelled', label: `สีแดง: ยกเลิกเคส (${stats.cancelled})`, dot: '#F87171' },
             ] as const
           ).map((tab) => (
             <button
@@ -935,14 +1021,26 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                               #{item.salesSeqNo}
                             </span>
                           )}
-                          <span className="font-mono font-semibold text-white">
+                          <span
+                            className={`font-mono font-semibold ${
+                              item.workflowStatus === 'cancelled'
+                                ? 'line-through text-rose-200/80'
+                                : 'text-white'
+                            }`}
+                          >
                             {getDisplayJobTitle(item)}
                           </span>
                           <span className={`font-semibold ${statusMeta.textClass}`}>
-                            · {statusMeta.colorName}
+                            · {statusMeta.colorName} ({statusMeta.shortLabel})
                           </span>
                         </div>
-                        <div className="text-sm font-semibold text-white mt-1 truncate">
+                        <div
+                          className={`text-sm font-semibold mt-1 truncate ${
+                            item.workflowStatus === 'cancelled'
+                              ? 'text-[#B5BDCB] line-through'
+                              : 'text-white'
+                          }`}
+                        >
                           {fullName || (
                             <span className="text-[#8E97AB] font-normal">ยังไม่ระบุชื่อคนไข้</span>
                           )}{' '}
@@ -953,7 +1051,13 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                         </div>
                       </div>
                       <div className="text-right shrink-0">
-                        <div className="text-sm font-mono font-bold tabular-nums text-[#FFCF90]">
+                        <div
+                          className={`text-sm font-mono font-bold tabular-nums ${
+                            item.workflowStatus === 'cancelled'
+                              ? 'text-rose-300/75 line-through'
+                              : 'text-[#FFCF90]'
+                          }`}
+                        >
                           {item.price > 0 ? formatCurrency(item.price) : 'รอราคา'}
                         </div>
                         <div className="text-[11px] font-mono text-[#8E97AB]">
@@ -989,26 +1093,28 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                     {/* Quick Stage Update Controls on Mobile */}
                     <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/[0.06]">
                       <div className="flex flex-wrap items-center gap-1.5">
-                        {canWrite && item.workflowStatus !== 'delivered' && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => openQuickStageModal(item, 'sterilizing')}
-                              className="px-2.5 py-1.5 rounded-lg bg-sky-500/15 border border-sky-400/30 text-sky-200 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
-                            >
-                              <FlaskConical className="w-3.5 h-3.5" />
-                              {item.workflowStatus === 'sterilizing' ? 'อัปเดตฆ่าเชื้อ' : 'ส่งฆ่าเชื้อ'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => openQuickStageModal(item, 'delivered')}
-                              className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-400/30 text-emerald-200 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
-                            >
-                              <Truck className="w-3.5 h-3.5" />
-                              อัปเดตจัดส่ง
-                            </button>
-                          </>
-                        )}
+                        {canWrite &&
+                          item.workflowStatus !== 'delivered' &&
+                          item.workflowStatus !== 'cancelled' && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => openQuickStageModal(item, 'sterilizing')}
+                                className="px-2.5 py-1.5 rounded-lg bg-sky-500/15 border border-sky-400/30 text-sky-200 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
+                              >
+                                <FlaskConical className="w-3.5 h-3.5" />
+                                {item.workflowStatus === 'sterilizing' ? 'อัปเดตฆ่าเชื้อ' : 'ส่งฆ่าเชื้อ'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openQuickStageModal(item, 'delivered')}
+                                className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-400/30 text-emerald-200 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
+                              >
+                                <Truck className="w-3.5 h-3.5" />
+                                อัปเดตจัดส่ง
+                              </button>
+                            </>
+                          )}
                         {canWrite && item.workflowStatus === 'delivered' && (
                           <button
                             type="button"
@@ -1017,6 +1123,27 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                           >
                             <Truck className="w-3.5 h-3.5" />
                             อัปเดต EMS/การเงิน
+                          </button>
+                        )}
+                        {canWrite && item.workflowStatus !== 'cancelled' && (
+                          <button
+                            type="button"
+                            onClick={() => openCancelModal(item)}
+                            className="px-2.5 py-1.5 rounded-lg bg-rose-500/15 border border-rose-400/35 text-rose-200 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <Ban className="w-3.5 h-3.5" />
+                            ยกเลิกเคส
+                          </button>
+                        )}
+                        {canWrite && item.workflowStatus === 'cancelled' && (
+                          <button
+                            type="button"
+                            disabled={updatingCaseId === item.id}
+                            onClick={() => void handleRestoreCase(item)}
+                            className="px-2.5 py-1.5 rounded-lg bg-amber-500/15 border border-amber-400/35 text-amber-200 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            {updatingCaseId === item.id ? 'กำลังกู้คืน...' : 'กู้คืนเคส'}
                           </button>
                         )}
                       </div>
@@ -1079,7 +1206,13 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                         className={`border-l-4 ${statusMeta.borderClass} ${statusMeta.rowTintClass} hover:bg-white/[0.05] transition-colors`}
                       >
                         <td className="py-3.5 px-4 align-top">
-                          <div className="font-mono font-bold text-white text-sm">
+                          <div
+                            className={`font-mono font-bold text-sm ${
+                              item.workflowStatus === 'cancelled'
+                                ? 'line-through text-rose-200/80'
+                                : 'text-white'
+                            }`}
+                          >
                             {getDisplayJobTitle(item)}
                           </div>
                           <div className="text-[11px] font-mono text-[#FFCF90] mt-0.5">
@@ -1092,7 +1225,13 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                         </td>
 
                         <td className="py-3.5 px-4 align-top">
-                          <div className="font-semibold text-white text-sm">
+                          <div
+                            className={`font-semibold text-sm ${
+                              item.workflowStatus === 'cancelled'
+                                ? 'line-through text-[#B5BDCB]'
+                                : 'text-white'
+                            }`}
+                          >
                             {fullName || (
                               <span className="text-[#8E97AB] font-normal">รอระบุชื่อคนไข้</span>
                             )}
@@ -1157,45 +1296,56 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                         </td>
 
                         <td className="py-3.5 px-4 align-top">
-                          <div className="font-mono font-bold text-[#FFCF90] text-sm">
+                          <div
+                            className={`font-mono font-bold text-sm ${
+                              item.workflowStatus === 'cancelled'
+                                ? 'text-rose-300/75 line-through'
+                                : 'text-[#FFCF90]'
+                            }`}
+                          >
                             {item.price > 0 ? formatCurrency(item.price) : 'รอระบุราคา'}
                           </div>
                           <div className="text-[11px] text-[#B5BDCB] mt-0.5">
-                            {item.deliveryDate || item.deliveryChannel || item.deliveredBy || item.emsTrackingNo
-                              ? `ส่ง ${item.deliveryDate || '-'}${item.deliveryChannel || item.deliveredBy ? ` · ${item.deliveryChannel || '-'} (${item.deliveredBy || '-'})` : ''}`
-                              : 'ยังไม่จัดส่ง'}
+                            {item.workflowStatus === 'cancelled'
+                              ? 'ยกเลิกเคสแล้ว'
+                              : item.deliveryDate || item.deliveryChannel || item.deliveredBy || item.emsTrackingNo
+                                ? `ส่ง ${item.deliveryDate || '-'}${item.deliveryChannel || item.deliveredBy ? ` · ${item.deliveryChannel || '-'} (${item.deliveredBy || '-'})` : ''}`
+                                : 'ยังไม่จัดส่ง'}
                           </div>
                           <div className="text-[11px] text-[#8E97AB] mt-0.5 truncate max-w-[175px]">
-                            {item.emsTrackingNo
-                              ? `EMS: ${item.emsTrackingNo}`
-                              : paymentLabels || item.paymentDetails || '-'}
+                            {item.workflowStatus === 'cancelled' && item.remarks
+                              ? item.remarks
+                              : item.emsTrackingNo
+                                ? `EMS: ${item.emsTrackingNo}`
+                                : paymentLabels || item.paymentDetails || '-'}
                           </div>
                         </td>
 
                         <td className="py-3.5 px-4 align-top">
                           {canWrite ? (
                             <div className="space-y-1.5">
-                              <div className="flex items-center gap-1.5">
-                                {item.workflowStatus !== 'delivered' && (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() => openQuickStageModal(item, 'sterilizing')}
-                                      className="px-2.5 py-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/30 text-sky-200 text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap transition-colors cursor-pointer"
-                                    >
-                                      <FlaskConical className="w-3 h-3" />
-                                      {item.workflowStatus === 'sterilizing' ? 'ฆ่าเชื้อ/Cert' : 'ส่งฆ่าเชื้อ'}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => openQuickStageModal(item, 'delivered')}
-                                      className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/30 text-emerald-200 text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap transition-colors cursor-pointer"
-                                    >
-                                      <Truck className="w-3 h-3" />
-                                      จัดส่งแล้ว
-                                    </button>
-                                  </>
-                                )}
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {item.workflowStatus !== 'delivered' &&
+                                  item.workflowStatus !== 'cancelled' && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => openQuickStageModal(item, 'sterilizing')}
+                                        className="px-2.5 py-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/30 text-sky-200 text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap transition-colors cursor-pointer"
+                                      >
+                                        <FlaskConical className="w-3 h-3" />
+                                        {item.workflowStatus === 'sterilizing' ? 'ฆ่าเชื้อ/Cert' : 'ส่งฆ่าเชื้อ'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => openQuickStageModal(item, 'delivered')}
+                                        className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/30 text-emerald-200 text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap transition-colors cursor-pointer"
+                                      >
+                                        <Truck className="w-3 h-3" />
+                                        จัดส่งแล้ว
+                                      </button>
+                                    </>
+                                  )}
                                 {item.workflowStatus === 'delivered' && (
                                   <button
                                     type="button"
@@ -1204,6 +1354,26 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                                   >
                                     <Truck className="w-3 h-3" />
                                     อัปเดตจัดส่ง/EMS
+                                  </button>
+                                )}
+                                {item.workflowStatus !== 'cancelled' ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => openCancelModal(item)}
+                                    className="px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-rose-200 text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap transition-colors cursor-pointer"
+                                  >
+                                    <Ban className="w-3 h-3" />
+                                    ยกเลิกเคส
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={updatingCaseId === item.id}
+                                    onClick={() => void handleRestoreCase(item)}
+                                    className="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/35 text-amber-200 text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap transition-colors cursor-pointer disabled:opacity-50"
+                                  >
+                                    <RotateCcw className="w-3 h-3" />
+                                    {updatingCaseId === item.id ? 'กำลังกู้คืน...' : 'กู้คืนเคส'}
                                   </button>
                                 )}
                               </div>
@@ -1225,6 +1395,7 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                                 <option value="in_progress">สีขาว · ระหว่างทำ</option>
                                 <option value="sterilizing">สีน้ำเงิน · ฆ่าเชื้อ</option>
                                 <option value="delivered">สีเขียว · จัดส่งแล้ว</option>
+                                <option value="cancelled">สีแดง · ยกเลิกเคส</option>
                               </select>
                             </div>
                           ) : (
@@ -2025,17 +2196,19 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                         </button>
                       )}
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                      {(['in_progress', 'sterilizing', 'delivered'] as const).map((st) => {
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      {(['in_progress', 'sterilizing', 'delivered', 'cancelled'] as const).map((st) => {
                         const meta = OFFICE_WORKFLOW_META[st];
                         const active = formData.workflowStatus === st;
+                        const lockedOption =
+                          isEditingDeliveredLocked && st !== 'delivered' && st !== 'cancelled';
                         return (
                           <button
                             key={st}
                             type="button"
-                            disabled={isEditingDeliveredLocked}
+                            disabled={lockedOption}
                             onClick={() => setFormData({ ...formData, workflowStatus: st })}
-                            className={`p-3 rounded-xl border text-left transition-all cursor-pointer disabled:opacity-60 ${
+                            className={`p-3 rounded-xl border text-left transition-all cursor-pointer disabled:opacity-50 ${
                               active
                                 ? 'bg-white/[0.1] border-[#FFB59D]/60 ring-1 ring-[#FFB59D]/40'
                                 : 'bg-[#0A0E17]/60 border-white/[0.08] hover:border-white/20'
@@ -2857,18 +3030,45 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                 อัปเดตล่าสุดโดย {viewingCase.updatedByName}
               </span>
               <div className="flex flex-wrap items-center gap-2">
-                {canWrite && viewingCase.workflowStatus !== 'delivered' && (
+                {canWrite &&
+                  viewingCase.workflowStatus !== 'delivered' &&
+                  viewingCase.workflowStatus !== 'cancelled' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const target = viewingCase;
+                        setViewingCase(null);
+                        openQuickStageModal(target, 'delivered');
+                      }}
+                      className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer inline-flex items-center gap-1.5"
+                    >
+                      <Truck className="w-3.5 h-3.5" />
+                      อัปเดตจัดส่งแล้ว
+                    </button>
+                  )}
+                {canWrite && viewingCase.workflowStatus !== 'cancelled' && (
                   <button
                     type="button"
                     onClick={() => {
                       const target = viewingCase;
                       setViewingCase(null);
-                      openQuickStageModal(target, 'delivered');
+                      openCancelModal(target);
                     }}
-                    className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer inline-flex items-center gap-1.5"
+                    className="px-3.5 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/40 text-rose-200 text-xs font-semibold cursor-pointer inline-flex items-center gap-1.5"
                   >
-                    <Truck className="w-3.5 h-3.5" />
-                    อัปเดตจัดส่งแล้ว
+                    <Ban className="w-3.5 h-3.5" />
+                    ยกเลิกเคส
+                  </button>
+                )}
+                {canWrite && viewingCase.workflowStatus === 'cancelled' && (
+                  <button
+                    type="button"
+                    disabled={updatingCaseId === viewingCase.id}
+                    onClick={() => void handleRestoreCase(viewingCase)}
+                    className="px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-xs font-semibold cursor-pointer inline-flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    กู้คืนเคส
                   </button>
                 )}
                 {canWrite && (
@@ -2933,6 +3133,120 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
                 className="px-4 py-2 text-xs font-semibold rounded-xl bg-rose-600 hover:bg-rose-500 text-white cursor-pointer disabled:opacity-50 transition-colors"
               >
                 {deletingCase ? 'กำลังลบ...' : 'ยืนยันลบเคส'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal 5: In-App Cancel Case Confirmation with Reason */}
+      {pendingCancelCase && (
+        <div
+          onClick={() => !cancellingCase && setPendingCancelCase(null)}
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="glass-panel rounded-3xl w-full max-w-md p-5 space-y-4 shadow-2xl border border-rose-500/35"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-400/35 text-rose-300 flex items-center justify-center shrink-0">
+                  <Ban className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">ยืนยันการยกเลิกเคส</h3>
+                  <p className="text-xs text-rose-300 font-mono">
+                    {getDisplayJobTitle(pendingCancelCase)}
+                    {pendingCancelCase.hospitalName ? ` · ${pendingCancelCase.hospitalName}` : ''}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={cancellingCase}
+                onClick={() => setPendingCancelCase(null)}
+                aria-label="ปิดหน้าต่างยกเลิกเคส"
+                className="p-1.5 rounded-lg text-[#8E97AB] hover:text-white hover:bg-white/[0.08] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="glass-tile rounded-xl p-3 text-xs text-[#C8B6AE] space-y-1">
+              <div>
+                คนไข้:{' '}
+                <strong className="text-white">
+                  {`${pendingCancelCase.patientPrefix} ${pendingCancelCase.patientFirstName} ${pendingCancelCase.patientLastName}`.trim() ||
+                    'ยังไม่ระบุชื่อคนไข้'}
+                </strong>
+              </div>
+              <div className="text-[11px] text-[#8E97AB] leading-relaxed">
+                เคสจะเปลี่ยนเป็นสถานะ <span className="text-rose-300 font-semibold">สีแดง · ยกเลิกเคส</span>{' '}
+                และไม่นับรวมในยอดเคสหรือยอดขาย (ยังเก็บประวัติไว้และกู้คืนภายหลังได้)
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label
+                htmlFor="cancel-case-reason"
+                className="block text-xs font-semibold text-[#E3BEB3]"
+              >
+                เหตุผลที่ยกเลิกเคส <span className="text-[#8E97AB] font-normal">(ไม่บังคับ)</span>
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                {CANCEL_REASON_PRESETS.map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setCancelReason(preset)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors cursor-pointer ${
+                      cancelReason === preset
+                        ? 'bg-rose-500/20 border-rose-400/50 text-rose-200'
+                        : 'bg-white/[0.04] border-white/[0.08] text-[#B5BDCB] hover:text-white hover:border-white/20'
+                    }`}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+              <input
+                id="cancel-case-reason"
+                type="text"
+                maxLength={200}
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="พิมพ์เหตุผลการยกเลิกเพิ่มเติม..."
+                className="glass-input w-full h-10 px-3 text-xs rounded-xl"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.08]">
+              <button
+                type="button"
+                disabled={cancellingCase}
+                onClick={() => setPendingCancelCase(null)}
+                className="btn-glass px-4 py-2 text-xs font-semibold rounded-xl cursor-pointer disabled:opacity-50"
+              >
+                ปิด
+              </button>
+              <button
+                type="button"
+                disabled={cancellingCase}
+                onClick={() => void handleConfirmCancelCase()}
+                className="px-4 py-2 text-xs font-semibold rounded-xl bg-rose-600 hover:bg-rose-500 text-white cursor-pointer disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+              >
+                {cancellingCase ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    กำลังยกเลิกเคส...
+                  </>
+                ) : (
+                  <>
+                    <Ban className="w-3.5 h-3.5" />
+                    ยืนยันยกเลิกเคส
+                  </>
+                )}
               </button>
             </div>
           </div>

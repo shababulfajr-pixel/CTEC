@@ -197,14 +197,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     [deals, regionFilter, scopedHospitalIds]
   );
 
-  // Resolve region for each live officeCase using CRM hospitals or the offline 77-province catalog
+  // Resolve region for each active (non-cancelled) live officeCase using CRM hospitals or the offline 77-province catalog
   const scopedOfficeCases = useMemo(() => {
-    if (regionFilter === 'all') return officeCases;
+    const activeCases = officeCases.filter((oc) => oc.workflowStatus !== 'cancelled');
+    if (regionFilter === 'all') return activeCases;
     const hospitalRegionByKey = new Map<string, RegionName>();
     hospitals.forEach((h) => {
       hospitalRegionByKey.set(normalizeHospitalNameKey(h.name), h.region);
     });
-    return officeCases.filter((oc) => {
+    return activeCases.filter((oc) => {
       const name = oc.hospitalName.trim();
       if (!name) return false;
       const key = normalizeHospitalNameKey(name);
@@ -671,6 +672,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
     const officeByRegion: Record<string, number> = {};
     officeCases.forEach((oc) => {
+      if (oc.workflowStatus === 'cancelled') return;
       const key = normalizeHospitalNameKey(oc.hospitalName);
       const reg =
         hospRegionLookup.get(key) ||

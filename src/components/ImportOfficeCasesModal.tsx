@@ -60,6 +60,7 @@ const STATUS_DOT_CLASS: Record<string, string> = {
   in_progress: 'bg-white border border-slate-400',
   sterilizing: 'bg-sky-400 border border-sky-200',
   delivered: 'bg-emerald-400 border border-emerald-200',
+  cancelled: 'bg-rose-400 border border-rose-200',
 };
 
 export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({

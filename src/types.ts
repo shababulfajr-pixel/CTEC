@@ -176,7 +176,7 @@ export interface AuditLogItem {
   createdAt: Timestamp | null;
 }
 
-export type OfficeCaseWorkflowStatus = 'in_progress' | 'sterilizing' | 'delivered';
+export type OfficeCaseWorkflowStatus = 'in_progress' | 'sterilizing' | 'delivered' | 'cancelled';
 
 export type OfficePaymentChannel =
   | 'patient_direct'
@@ -288,6 +288,15 @@ export const OFFICE_WORKFLOW_META: Record<
     borderClass: 'border-l-emerald-400',
     rowTintClass: 'bg-emerald-500/[0.07]',
     textClass: 'text-emerald-300',
+  },
+  cancelled: {
+    label: 'สีแดง · ยกเลิกเคส',
+    shortLabel: 'ยกเลิกเคส',
+    colorName: 'สีแดง',
+    dotColor: '#F87171',
+    borderClass: 'border-l-rose-500',
+    rowTintClass: 'bg-rose-500/[0.08]',
+    textClass: 'text-rose-300',
   },
 };
 

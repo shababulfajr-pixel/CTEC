@@ -209,6 +209,7 @@ export const HospitalMapView: React.FC<HospitalMapViewProps> = ({
     const buckets = new Map<string, AggBucket>();
 
     for (const oc of officeCases) {
+      if (oc.workflowStatus === 'cancelled') continue;
       const rawName = (oc.hospitalName || '').trim();
       if (!rawName) continue;
 

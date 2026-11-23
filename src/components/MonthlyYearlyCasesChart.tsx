@@ -104,6 +104,7 @@ export const MonthlyYearlyCasesChart: React.FC<MonthlyYearlyCasesChartProps> = (
     });
 
     officeCases.forEach((oc) => {
+      if (oc.workflowStatus === 'cancelled') return;
       let parsed =
         parseDateToYearMonth(oc.receivedDate) ||
         parseDateToYearMonth(oc.surgeryDate) ||

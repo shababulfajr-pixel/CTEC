@@ -65,7 +65,9 @@ function sanitizePayloadFields(input: OfficeCaseSeedInput) {
     hospitalCategory: sanitizeHospitalCategory(Number(input.hospitalCategory)),
     productionPlanNo: clampString(input.productionPlanNo, 60),
     barcode: clampString(input.barcode, 64),
-    workflowStatus: (['in_progress', 'sterilizing', 'delivered'].includes(input.workflowStatus)
+    workflowStatus: (['in_progress', 'sterilizing', 'delivered', 'cancelled'].includes(
+      input.workflowStatus
+    )
       ? input.workflowStatus
       : 'in_progress') as OfficeCaseWorkflowStatus,
     paymentChannels: sanitizePaymentChannels(input.paymentChannels || []),
@@ -152,6 +154,7 @@ function buildUpdateOfficeCasePayload(
   // Tier 3 compliance: for non-admin editing an already-delivered case, only mutate allowed post-delivery fields
   return isLockedDelivered
     ? {
+        workflowStatus: fields.workflowStatus === 'cancelled' ? 'cancelled' : 'delivered',
         paymentChannels: fields.paymentChannels,
         price: fields.price,
         paymentDetails: fields.paymentDetails,
@@ -294,6 +297,19 @@ export async function updateOfficeCase(
             createdBy: actor.uid,
             createdByName: actor.displayName,
           });
+        } else if (
+          existingCase.workflowStatus !== 'cancelled' &&
+          fields.workflowStatus === 'cancelled'
+        ) {
+          await publishNotification({
+            type: 'stage_update',
+            title: `ยกเลิกเคส (สีแดง): ${label}`.slice(0, 178),
+            message: `${actor.displayName} กดยกเลิกเคส ${fields.hospitalName || 'ยังไม่ระบุ รพ.'}${fields.remarks ? ` · หมายเหตุ: ${fields.remarks}` : ''}`.slice(0, 580),
+            amount: 0,
+            caseCount: 0,
+            createdBy: actor.uid,
+            createdByName: actor.displayName,
+          });
         }
       } catch (notifErr) {
         console.warn('Office case stage notification skipped:', notifErr);
@@ -391,6 +407,50 @@ export async function quickUpdateOfficeCaseStatus(
         nextStatus === 'delivered' && !existingCase.deliveryDate
           ? todayThai
           : existingCase.deliveryDate,
+    },
+    actor
+  );
+}
+
+export async function cancelOfficeCase(
+  existingCase: OfficeCase,
+  reason: string,
+  actor: UserProfile
+) {
+  const now = new Date();
+  const todayThai = `${now.getDate()}/${now.getMonth() + 1}/${now.getFullYear() + 543}`;
+  const cleanReason = reason.trim();
+  const cancelTag = cleanReason
+    ? `[ยกเลิกเคส ${todayThai}]: ${cleanReason}`
+    : `[ยกเลิกเคส ${todayThai}]`;
+  const existingRemarks = existingCase.remarks.trim();
+  const nextRemarks = existingRemarks
+    ? `${existingRemarks} | ${cancelTag}`.slice(0, 600)
+    : cancelTag.slice(0, 600);
+
+  await updateOfficeCaseStage(
+    existingCase,
+    {
+      workflowStatus: 'cancelled',
+      remarks: nextRemarks,
+    },
+    actor
+  );
+}
+
+export async function restoreOfficeCase(existingCase: OfficeCase, actor: UserProfile) {
+  const restoredStatus: OfficeCaseWorkflowStatus = existingCase.deliveryDate.trim()
+    ? 'delivered'
+    : existingCase.sterilizeOutDate.trim() ||
+        existingCase.sterilizeReturnDate.trim() ||
+        existingCase.certificateNo.trim()
+      ? 'sterilizing'
+      : 'in_progress';
+
+  await updateOfficeCaseStage(
+    existingCase,
+    {
+      workflowStatus: restoredStatus,
     },
     actor
   );
@@ -495,30 +555,37 @@ function mergeImportedIntoExisting(
   const mergedQcReceiveDate = pickStr(incoming.qcReceiveDate, base.qcReceiveDate);
   const mergedCertificateNo = pickStr(incoming.certificateNo, base.certificateNo);
 
-  // Preserve status progression (delivered > sterilizing > in_progress) unless incoming explicitly upgrades
+  // Preserve cancelled status when already cancelled or explicitly marked cancelled in Excel;
+  // otherwise preserve forward progression (delivered > sterilizing > in_progress)
   const rank: Record<OfficeCaseWorkflowStatus, number> = {
+    cancelled: -1,
     in_progress: 0,
     sterilizing: 1,
     delivered: 2,
   };
-  let nextStatus: OfficeCaseWorkflowStatus =
-    rank[incoming.workflowStatus] >= rank[base.workflowStatus]
-      ? incoming.workflowStatus
-      : base.workflowStatus;
-  if (
-    mergedDeliveryDate ||
-    mergedEmsTrackingNo ||
-    (mergedDeliveryChannel && mergedDeliveredBy)
-  ) {
-    nextStatus = 'delivered';
-  } else if (
-    (mergedSterilizeOutDate ||
-      mergedSterilizeReturnDate ||
-      mergedQcReceiveDate ||
-      mergedCertificateNo) &&
-    nextStatus === 'in_progress'
-  ) {
-    nextStatus = 'sterilizing';
+  let nextStatus: OfficeCaseWorkflowStatus;
+  if (incoming.workflowStatus === 'cancelled' || base.workflowStatus === 'cancelled') {
+    nextStatus = 'cancelled';
+  } else {
+    nextStatus =
+      rank[incoming.workflowStatus] >= rank[base.workflowStatus]
+        ? incoming.workflowStatus
+        : base.workflowStatus;
+    if (
+      mergedDeliveryDate ||
+      mergedEmsTrackingNo ||
+      (mergedDeliveryChannel && mergedDeliveredBy)
+    ) {
+      nextStatus = 'delivered';
+    } else if (
+      (mergedSterilizeOutDate ||
+        mergedSterilizeReturnDate ||
+        mergedQcReceiveDate ||
+        mergedCertificateNo) &&
+      nextStatus === 'in_progress'
+    ) {
+      nextStatus = 'sterilizing';
+    }
   }
 
   return {

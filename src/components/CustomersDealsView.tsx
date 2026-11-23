@@ -196,6 +196,7 @@ export const CustomersDealsView: React.FC<CustomersDealsViewProps> = ({
     const byKey = new Map<string, AggGroup>();
 
     for (const oc of officeCases) {
+      if (oc.workflowStatus === 'cancelled') continue;
       const rawName = (oc.hospitalName || '').trim();
       if (!rawName || rawName === '-' || rawName.length < 2) continue;
 

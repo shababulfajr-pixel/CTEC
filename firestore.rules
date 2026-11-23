@@ -153,7 +153,7 @@ service cloud.firestore {
     }
 
     function isValidOfficeWorkflowStatus(s) {
-      return s in ['in_progress', 'sterilizing', 'delivered'];
+      return s in ['in_progress', 'sterilizing', 'delivered', 'cancelled'];
     }
 
     // -------------------------------------------------------------------------
@@ -402,11 +402,12 @@ service cloud.firestore {
         // Tier 2: Approved authorized team member updating active or sterilizing cases
         (uData.role in ['executive', 'manager', 'office_admin', 'sales', 'accounting'] &&
           e.workflowStatus != 'delivered') ||
-        // Tier 3: Approved authorized team member updating billing/sterilization/QA cert/delivery/EMS/remarks on delivered cases without changing patient/implant core specs
+        // Tier 3: Approved authorized team member updating billing/sterilization/QA cert/delivery/EMS/remarks or cancelling delivered cases without changing patient/implant core specs
         (uData.role in ['executive', 'manager', 'office_admin', 'sales', 'accounting'] &&
           e.workflowStatus == 'delivered' &&
-          d.workflowStatus == 'delivered' &&
+          d.workflowStatus in ['delivered', 'cancelled'] &&
           diffKeys.hasOnly([
+            'workflowStatus',
             'paymentChannels', 'price', 'paymentDetails', 'paymentConditionNote',
             'sterilizeOutDate', 'sterilizeReturnDate', 'radiationMinKgy', 'radiationMaxKgy',
             'doseUniformity', 'qcReceiveDate', 'certificateNo',

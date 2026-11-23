@@ -895,6 +895,14 @@ function parseWorkflowStatusCell(
 ): OfficeCaseWorkflowStatus {
   const lower = statusRaw.trim().toLowerCase();
   if (
+    lower.includes('ยกเลิก') ||
+    lower.includes('สีแดง') ||
+    lower === 'แดง' ||
+    lower.includes('cancel')
+  ) {
+    return 'cancelled';
+  }
+  if (
     lower.includes('เขียว') ||
     lower.includes('จัดส่งแล้ว') ||
     lower.includes('ส่งแล้ว') ||
