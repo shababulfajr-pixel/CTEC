@@ -369,7 +369,7 @@ export const ImportOfficeCasesModal: React.FC<ImportOfficeCasesModalProps> = ({
     setProgress({
       done: 0,
       total: rowsToImport.length,
-      label: `เตรียมนำเข้า ${rowsToImport.length.toLocaleString('th-TH')} รายการ (แบบชุดครั้งละ 100 รายการ)...`,
+      label: `เตรียมนำเข้า ${rowsToImport.length.toLocaleString('th-TH')} รายการ (แบบชุดความเร็วสูง)...`,
     });
 
     try {

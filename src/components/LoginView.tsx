@@ -14,8 +14,14 @@ export const LoginView: React.FC = () => {
       await signInWithPopup(auth, googleProvider);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'ไม่สามารถเข้าสู่ระบบได้';
-      if (msg.includes('popup-closed-by-user')) {
+      if (msg.includes('popup-closed-by-user') || msg.includes('cancelled-popup-request')) {
         setError('ยกเลิกการเข้าสู่ระบบ กรุณากดปุ่มด้านล่างเพื่อลองใหม่อีกครั้ง');
+      } else if (msg.includes('popup-blocked')) {
+        setError('เบราว์เซอร์บล็อกหน้าต่างป๊อปอัป กรุณาอนุญาตป๊อปอัปสำหรับเว็บไซต์นี้แล้วลองใหม่อีกครั้ง');
+      } else if (msg.includes('unauthorized-domain')) {
+        setError('โดเมนนี้ยังไม่ได้รับอนุญาตใน Firebase Authentication (กรุณาเพิ่มโดเมนใน Firebase Console → Authentication → Settings → Authorized domains)');
+      } else if (msg.includes('network-request-failed')) {
+        setError('ไม่สามารถเชื่อมต่อเครือข่ายได้ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่อีกครั้ง');
       } else {
         setError(`เข้าสู่ระบบไม่สำเร็จ: ${msg}`);
       }
