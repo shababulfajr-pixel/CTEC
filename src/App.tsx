@@ -428,9 +428,11 @@ export default function App() {
   const handleOpenNewCase = useCallback(() => {
     const canWriteOffice =
       currentUser?.role === 'admin' ||
+      currentUser?.role === 'executive' ||
       currentUser?.role === 'manager' ||
       currentUser?.role === 'office_admin' ||
-      currentUser?.role === 'sales';
+      currentUser?.role === 'sales' ||
+      currentUser?.role === 'accounting';
 
     setActiveTab('office_cases');
     if (canWriteOffice) {
@@ -524,11 +526,7 @@ export default function App() {
     currentUser.role === 'sales' ||
     currentUser.role === 'accounting';
 
-  const canCreateCase =
-    currentUser.role === 'admin' ||
-    currentUser.role === 'manager' ||
-    currentUser.role === 'office_admin' ||
-    currentUser.role === 'sales';
+  const canCreateCase = canAccessOfficeCases;
 
   const pendingRegistrationsCount = users.filter((u) => u.approvalStatus === 'pending').length;
 

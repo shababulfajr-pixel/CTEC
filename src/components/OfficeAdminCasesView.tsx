@@ -251,13 +251,12 @@ export const OfficeAdminCasesView: React.FC<OfficeAdminCasesViewProps> = ({
   const isAdmin = currentUser.role === 'admin';
   const canWrite =
     currentUser.role === 'admin' ||
+    currentUser.role === 'executive' ||
     currentUser.role === 'manager' ||
     currentUser.role === 'office_admin' ||
-    currentUser.role === 'sales';
-  const canImportExcel =
-    currentUser.role === 'admin' ||
-    currentUser.role === 'manager' ||
-    currentUser.role === 'office_admin';
+    currentUser.role === 'sales' ||
+    currentUser.role === 'accounting';
+  const canImportExcel = canWrite;
 
   useEffect(() => {
     if (openAddCaseSignal > 0 && canWrite) {

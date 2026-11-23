@@ -8,7 +8,8 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------------------
-    // Phase 3: Hardened Global Helpers
+    // Phase 3: Hardened Global Helpers (Single-lookup optimized to stay strictly
+    // under Firestore per-document (10) & per-batch (20) get()/exists() limits)
     // -------------------------------------------------------------------------
     function isSignedIn() {
       return request.auth != null;
@@ -48,6 +49,18 @@ service cloud.firestore {
       );
     }
 
+    function isApprovedWithRole(uData, roles) {
+      return isApprovedUserRecord(uData) && uData.role in roles;
+    }
+
+    function hasApprovedRole(roles) {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        hasUserDoc() &&
+        isApprovedWithRole(currentUserDoc(), roles)
+      );
+    }
+
     function isApprovedActiveUser() {
       return isBootstrappedAdmin() || (
         isVerifiedUser() &&
@@ -56,43 +69,24 @@ service cloud.firestore {
       );
     }
 
-    function currentUserRole() {
-      return hasUserDoc() ? currentUserDoc().role : 'none';
-    }
-
     function isAdmin() {
-      return isBootstrappedAdmin() || (
-        isApprovedActiveUser() &&
-        currentUserRole() == 'admin'
-      );
+      return hasApprovedRole(['admin']);
     }
 
     function isManagerOrAbove() {
-      return isApprovedActiveUser() && (
-        isBootstrappedAdmin() ||
-        currentUserRole() in ['admin', 'executive', 'manager']
-      );
+      return hasApprovedRole(['admin', 'executive', 'manager']);
     }
 
     function canReadOrgDeals() {
-      return isApprovedActiveUser() && (
-        isBootstrappedAdmin() ||
-        currentUserRole() in ['admin', 'executive', 'manager', 'accounting']
-      );
+      return hasApprovedRole(['admin', 'executive', 'manager', 'accounting']);
     }
 
     function isOfficeStaffOrAbove() {
-      return isBootstrappedAdmin() || (
-        isApprovedActiveUser() &&
-        currentUserRole() in ['admin', 'executive', 'manager', 'office_admin', 'sales', 'accounting']
-      );
+      return hasApprovedRole(['admin', 'executive', 'manager', 'office_admin', 'sales', 'accounting']);
     }
 
     function canWriteOfficeCases() {
-      return isBootstrappedAdmin() || (
-        isApprovedActiveUser() &&
-        currentUserRole() in ['admin', 'manager', 'office_admin', 'sales']
-      );
+      return hasApprovedRole(['admin', 'executive', 'manager', 'office_admin', 'sales', 'accounting']);
     }
 
     function isValidRole(role) {
@@ -401,26 +395,39 @@ service cloud.firestore {
       isValidOfficeCasePartC(data);
     }
 
+    function canUpdateOfficeCaseWithUser(uData, d, e, diffKeys) {
+      return isApprovedUserRecord(uData) && (
+        // Tier 1: Admin override
+        uData.role == 'admin' ||
+        // Tier 2: Approved authorized team member updating active or sterilizing cases
+        (uData.role in ['executive', 'manager', 'office_admin', 'sales', 'accounting'] &&
+          e.workflowStatus != 'delivered') ||
+        // Tier 3: Approved authorized team member updating billing/sterilization/QA cert/delivery/EMS/remarks on delivered cases without changing patient/implant core specs
+        (uData.role in ['executive', 'manager', 'office_admin', 'sales', 'accounting'] &&
+          e.workflowStatus == 'delivered' &&
+          d.workflowStatus == 'delivered' &&
+          diffKeys.hasOnly([
+            'paymentChannels', 'price', 'paymentDetails', 'paymentConditionNote',
+            'sterilizeOutDate', 'sterilizeReturnDate', 'radiationMinKgy', 'radiationMaxKgy',
+            'doseUniformity', 'qcReceiveDate', 'certificateNo',
+            'deliveryDate', 'deliveryChannel', 'deliveredBy', 'emsTrackingNo',
+            'shippingInfo', 'receiptAddress', 'packageInfo', 'remarks',
+            'updatedBy', 'updatedByName', 'updatedAt'
+          ]))
+      );
+    }
+
     function canUpdateOfficeCase(d, e) {
       let diffKeys = d.diff(e).affectedKeys();
       return !diffKeys.hasAny(['orgId', 'createdBy', 'createdByName', 'createdAt']) &&
         d.updatedBy == request.auth.uid &&
         d.updatedAt == request.time &&
         (
-          // Tier 1 (Admin override) & Tier 2 (Office Admin / Manager on active or sterilizing cases)
-          isAdmin() ||
-          (canWriteOfficeCases() && e.workflowStatus != 'delivered') ||
-          // Tier 3: Office Admin updating billing/QA cert/EMS/remarks on an already-delivered case without changing patient/implant core specs
-          (canWriteOfficeCases() && e.workflowStatus == 'delivered' &&
-            d.workflowStatus == 'delivered' &&
-            diffKeys.hasOnly([
-              'paymentChannels', 'price', 'paymentDetails', 'paymentConditionNote',
-              'sterilizeReturnDate', 'radiationMinKgy', 'radiationMaxKgy',
-              'doseUniformity', 'qcReceiveDate', 'certificateNo',
-              'deliveryDate', 'deliveryChannel', 'deliveredBy', 'emsTrackingNo',
-              'shippingInfo', 'receiptAddress', 'packageInfo', 'remarks',
-              'updatedBy', 'updatedByName', 'updatedAt'
-            ]))
+          isBootstrappedAdmin() ||
+          (
+            hasUserDoc() &&
+            canUpdateOfficeCaseWithUser(currentUserDoc(), d, e, diffKeys)
+          )
         );
     }
 
@@ -655,7 +662,7 @@ service cloud.firestore {
     }
 
     // 6. Office Cases (Unified Sales & Admin Personalized Implant Intake, Sterilization & Delivery Ledger)
-    // Contains patient PII: strictly restricted to approved authorized sales/office/accounting/management/admin roles.
+    // Contains patient PII: strictly restricted to approved authorized team roles.
     match /officeCases/{caseId} {
       allow get: if isVerifiedUser() && isValidId(caseId) && existing().orgId == 'ctec-medical' && isOfficeStaffOrAbove();
       allow list: if isVerifiedUser() && resource.data.orgId == 'ctec-medical' && isOfficeStaffOrAbove();

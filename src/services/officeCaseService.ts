@@ -156,6 +156,7 @@ function buildUpdateOfficeCasePayload(
         price: fields.price,
         paymentDetails: fields.paymentDetails,
         paymentConditionNote: fields.paymentConditionNote,
+        sterilizeOutDate: fields.sterilizeOutDate,
         sterilizeReturnDate: fields.sterilizeReturnDate,
         radiationMinKgy: fields.radiationMinKgy,
         radiationMaxKgy: fields.radiationMaxKgy,
@@ -575,7 +576,11 @@ function mergeImportedIntoExisting(
   };
 }
 
-const IMPORT_BATCH_CHUNK_SIZE = 100;
+// Firestore Security Rules cap get()/exists() calls at 20 per multi-document writeBatch.
+// Each non-bootstrap team write uses 2 lookups (exists + get on /users/{uid}), so 5 docs/batch
+// uses at most 10 lookups (50% safety margin) while 5 concurrent batches keep 500+ rows fast.
+const IMPORT_BATCH_CHUNK_SIZE = 5;
+const IMPORT_BATCH_CONCURRENCY = 5;
 const MAX_DETAILED_IMPORT_ERRORS = 25;
 
 type PendingBatchOp =
@@ -623,6 +628,7 @@ async function commitOpsWithResilientFallback(
     }
   } catch (err) {
     if (ops.length === 1) {
+      console.error(`Import row failed (${ops[0].kind} ${ops[0].rowLabel}):`, err);
       counters.failed += 1;
       if (counters.errors.length < MAX_DETAILED_IMPORT_ERRORS) {
         counters.errors.push(
@@ -732,7 +738,11 @@ export async function importOfficeCasesBatch(
 
   // Report initial skipped progress immediately
   let completedCount = skipped;
-  const totalChunks = Math.max(1, Math.ceil(pendingOps.length / IMPORT_BATCH_CHUNK_SIZE));
+  const chunks: PendingBatchOp[][] = [];
+  for (let offset = 0; offset < pendingOps.length; offset += IMPORT_BATCH_CHUNK_SIZE) {
+    chunks.push(pendingOps.slice(offset, offset + IMPORT_BATCH_CHUNK_SIZE));
+  }
+  const totalChunks = Math.max(1, chunks.length);
   options?.onProgress?.(
     completedCount,
     total,
@@ -741,18 +751,19 @@ export async function importOfficeCasesBatch(
       : 'ตรวจสอบข้อมูลเสร็จสิ้น'
   );
 
-  for (let offset = 0; offset < pendingOps.length; offset += IMPORT_BATCH_CHUNK_SIZE) {
-    const chunkIndex = Math.floor(offset / IMPORT_BATCH_CHUNK_SIZE) + 1;
-    const chunk = pendingOps.slice(offset, offset + IMPORT_BATCH_CHUNK_SIZE);
+  for (let waveStart = 0; waveStart < chunks.length; waveStart += IMPORT_BATCH_CONCURRENCY) {
+    const wave = chunks.slice(waveStart, waveStart + IMPORT_BATCH_CONCURRENCY);
+    const waveEndChunk = Math.min(chunks.length, waveStart + wave.length);
+    const waveRowCount = wave.reduce((sum, ch) => sum + ch.length, 0);
 
     options?.onProgress?.(
       completedCount,
       total,
-      `กำลังบันทึกชุดที่ ${chunkIndex} / ${totalChunks} (${chunk.length} รายการ)...`
+      `กำลังบันทึกชุดที่ ${waveStart + 1}–${waveEndChunk} / ${totalChunks} (${waveRowCount} รายการ)...`
     );
 
-    await commitOpsWithResilientFallback(chunk, counters);
-    completedCount += chunk.length;
+    await Promise.all(wave.map((chunk) => commitOpsWithResilientFallback(chunk, counters)));
+    completedCount += waveRowCount;
 
     options?.onProgress?.(
       Math.min(completedCount, total),
@@ -760,7 +771,7 @@ export async function importOfficeCasesBatch(
       `บันทึกแล้ว ${Math.min(completedCount, total).toLocaleString('th-TH')} / ${total.toLocaleString('th-TH')} รายการ`
     );
 
-    // Yield to browser paint loop between chunks so UI stays responsive on 500–5,000+ rows
+    // Yield to browser paint loop between waves so UI stays responsive on 500–5,000+ rows
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
